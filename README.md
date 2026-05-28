@@ -22,4 +22,3 @@ $env:GH_TOKEN="your_github_token"
 npm run publish:win
 ```
 
-For Android, attach `android/app/build/outputs/apk/debug/app-debug.apk` or a signed release APK to the same GitHub Release.
