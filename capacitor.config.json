@@ -1,0 +1,8 @@
+{
+  "appId": "com.codex.imagesheetpdf",
+  "appName": "Image Sheet PDF",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}

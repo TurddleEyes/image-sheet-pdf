@@ -1,0 +1,8 @@
+node_modules/
+dist/
+android-sdk/
+android-cmdline-tools-temp/
+commandlinetools-win-latest.zip
+.env
+*.log
+

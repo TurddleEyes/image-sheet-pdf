@@ -1,0 +1,70 @@
+{
+  "name": "image-sheet-pdf",
+  "version": "0.1.0",
+  "description": "Arrange images, export one-page PDFs, and stack ordered images into tall PNG or JPEG files.",
+  "author": "Codex",
+  "private": false,
+  "type": "module",
+  "main": "electron/main.mjs",
+  "scripts": {
+    "dev": "concurrently \"vite --host 127.0.0.1\" \"node server/stack-server.mjs\"",
+    "dev:client": "vite --host 127.0.0.1",
+    "dev:server": "node server/stack-server.mjs",
+    "build": "tsc && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "electron": "npm run build && electron .",
+    "dist:win": "npm run build && electron-builder --win nsis portable",
+    "publish:win": "npm run build && electron-builder --win nsis portable --publish always",
+    "android:init": "npm run build && cap add android",
+    "android:sync": "npm run build && cap sync android",
+    "android:apk": "npm run android:sync && cd android && .\\gradlew.bat assembleDebug"
+  },
+  "dependencies": {
+    "@capacitor/core": "^8.3.4",
+    "concurrently": "^9.2.1",
+    "electron-updater": "^6.8.3",
+    "express": "^5.2.1",
+    "jspdf": "^4.2.1",
+    "lucide-react": "^0.555.0",
+    "multer": "^2.1.1",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
+    "sharp": "^0.34.5"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^8.3.4",
+    "@capacitor/cli": "^8.3.4",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "electron": "^42.3.0",
+    "electron-builder": "^26.8.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.4"
+  },
+  "build": {
+    "appId": "com.codex.imagesheetpdf",
+    "productName": "Image Sheet PDF",
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "server/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/sharp/**/*",
+      "node_modules/@img/**/*"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "TurddleEyes",
+      "repo": "image-sheet-pdf"
+    }
+  }
+}
