@@ -1,10 +1,11 @@
 import { app, BrowserWindow, dialog, shell } from "electron";
-import { autoUpdater } from "electron-updater";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { startStackServer } from "../server/stack-server.mjs";
 
 let stackServer;
 let mainWindow;
+const latestReleaseApiUrl = "https://api.github.com/repos/TurddleEyes/image-sheet-pdf/releases/latest";
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -25,50 +26,89 @@ function createWindow() {
 }
 
 function configureUpdates() {
-  autoUpdater.autoDownload = false;
-  autoUpdater.autoInstallOnAppQuit = false;
-
-  autoUpdater.on("update-available", async (info) => {
-    const choice = await dialog.showMessageBox(mainWindow, {
-      type: "info",
-      buttons: ["Download update", "Later", "Open release page"],
-      defaultId: 0,
-      cancelId: 1,
-      title: "Update available",
-      message: `Image Sheet PDF ${info.version} is available.`,
-      detail: "Download it now? The app will ask before installing."
-    });
-
-    if (choice.response === 0) {
-      autoUpdater.downloadUpdate();
-    } else if (choice.response === 2) {
-      shell.openExternal("https://github.com/TurddleEyes/image-sheet-pdf/releases/latest");
-    }
-  });
-
-  autoUpdater.on("update-downloaded", async (info) => {
-    const choice = await dialog.showMessageBox(mainWindow, {
-      type: "info",
-      buttons: ["Restart and install", "Install later"],
-      defaultId: 0,
-      cancelId: 1,
-      title: "Update ready",
-      message: `Image Sheet PDF ${info.version} has been downloaded.`,
-      detail: "Restart now to finish installing the update."
-    });
-
-    if (choice.response === 0) {
-      autoUpdater.quitAndInstall();
-    }
-  });
-
-  autoUpdater.on("error", (error) => {
-    console.warn("Update check failed:", error);
-  });
-
   setTimeout(() => {
-    autoUpdater.checkForUpdates().catch((error) => console.warn("Update check failed:", error));
+    checkForUpdates().catch((error) => console.warn("Update check failed:", error));
   }, 2500);
+}
+
+async function checkForUpdates() {
+  const response = await fetch(latestReleaseApiUrl, {
+    headers: {
+      Accept: "application/vnd.github+json",
+      "User-Agent": "Image-Sheet-PDF"
+    }
+  });
+  if (!response.ok) {
+    throw new Error(`GitHub update check failed: ${response.status}`);
+  }
+
+  const release = await response.json();
+  const latestVersion = release.tag_name?.replace(/^v/i, "");
+  if (!latestVersion || compareVersions(latestVersion, app.getVersion()) <= 0) {
+    return;
+  }
+
+  const installer = release.assets?.find((asset) => asset.name.endsWith(".exe"));
+  if (!installer?.browser_download_url) {
+    return;
+  }
+
+  const choice = await dialog.showMessageBox(mainWindow, {
+    type: "info",
+    buttons: ["Download update", "Later", "Open release page"],
+    defaultId: 0,
+    cancelId: 1,
+    title: "Update available",
+    message: `Image Sheet PDF ${latestVersion} is available.`,
+    detail: "Download the new Windows installer now? The app will ask before opening it."
+  });
+
+  if (choice.response === 0) {
+    await downloadInstaller(installer.browser_download_url, installer.name, latestVersion);
+  } else if (choice.response === 2) {
+    shell.openExternal(release.html_url ?? "https://github.com/TurddleEyes/image-sheet-pdf/releases/latest");
+  }
+}
+
+async function downloadInstaller(url, fileName, version) {
+  const response = await fetch(url, {
+    headers: { "User-Agent": "Image-Sheet-PDF" }
+  });
+  if (!response.ok) {
+    throw new Error(`Installer download failed: ${response.status}`);
+  }
+
+  const bytes = Buffer.from(await response.arrayBuffer());
+  const filePath = join(app.getPath("downloads"), fileName);
+  await writeFile(filePath, bytes);
+
+  const choice = await dialog.showMessageBox(mainWindow, {
+    type: "info",
+    buttons: ["Open installer", "Show in folder", "Later"],
+    defaultId: 0,
+    cancelId: 2,
+    title: "Update downloaded",
+    message: `Image Sheet PDF ${version} has been downloaded.`,
+    detail: filePath
+  });
+
+  if (choice.response === 0) {
+    const error = await shell.openPath(filePath);
+    if (error) console.warn("Could not open installer:", error);
+  } else if (choice.response === 1) {
+    shell.showItemInFolder(filePath);
+  }
+}
+
+function compareVersions(a, b) {
+  const left = a.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const right = b.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const length = Math.max(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    const difference = (left[index] ?? 0) - (right[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
 }
 
 app.whenReady().then(() => {

@@ -46,6 +46,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/*.exe
-            dist/latest.yml
+            dist/Image-Sheet-PDF-Setup-*.exe
             android/app/build/outputs/apk/debug/app-debug.apk

@@ -1,6 +1,6 @@
 {
   "name": "image-sheet-pdf",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Arrange images, export one-page PDFs, and stack ordered images into tall PNG or JPEG files.",
   "author": "Codex",
   "private": false,
@@ -13,8 +13,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview --host 127.0.0.1",
     "electron": "npm run build && electron .",
-    "dist:win": "npm run build && electron-builder --win nsis portable",
-    "publish:win": "npm run build && electron-builder --win nsis portable --publish always",
+    "dist:win": "npm run build && electron-builder --win nsis",
+    "publish:win": "npm run build && electron-builder --win nsis --publish always",
     "android:init": "npm run build && cap add android",
     "android:sync": "npm run build && cap sync android",
     "android:apk": "npm run android:sync && cd android && .\\gradlew.bat assembleDebug"
@@ -22,7 +22,6 @@
   "dependencies": {
     "@capacitor/core": "^8.3.4",
     "concurrently": "^9.2.1",
-    "electron-updater": "^6.8.3",
     "express": "^5.2.1",
     "jspdf": "^4.2.1",
     "lucide-react": "^0.555.0",
@@ -56,10 +55,8 @@
       "node_modules/@img/**/*"
     ],
     "win": {
-      "target": [
-        "nsis",
-        "portable"
-      ]
+      "target": "nsis",
+      "artifactName": "Image-Sheet-PDF-Setup-${version}.${ext}"
     },
     "publish": {
       "provider": "github",
