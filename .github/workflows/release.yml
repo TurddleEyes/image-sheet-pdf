@@ -38,8 +38,6 @@ jobs:
         run: npm run android:apk
 
       - name: Build Windows app
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run dist:win
 
       - name: Publish GitHub Release
