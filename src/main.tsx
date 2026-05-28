@@ -27,6 +27,16 @@ declare global {
             mimeType: string;
             base64Data: string;
           }) => Promise<{ uri?: string }>;
+          beginFile?: (options: {
+            filename: string;
+            mimeType: string;
+          }) => Promise<{ sessionId: string }>;
+          appendFileChunk?: (options: {
+            sessionId: string;
+            base64Data: string;
+          }) => Promise<{ bytes?: number }>;
+          finishFile?: (options: { sessionId: string }) => Promise<{ uri?: string }>;
+          abortFile?: (options: { sessionId: string }) => Promise<void>;
         };
         AppLog?: {
           appendLog: (options: { level: string; message: string }) => Promise<void>;
@@ -852,6 +862,16 @@ function escapeXml(value: string) {
 async function downloadBlob(blob: Blob, filename: string, fallbackMimeType = "application/octet-stream") {
   const nativeSaver = window.Capacitor?.Plugins?.DownloadSaver;
   if (window.Capacitor?.getPlatform?.() === "android" && nativeSaver) {
+    if (
+      nativeSaver.beginFile &&
+      nativeSaver.appendFileChunk &&
+      nativeSaver.finishFile &&
+      nativeSaver.abortFile
+    ) {
+      await downloadBlobInChunks(nativeSaver, blob, filename, fallbackMimeType);
+      return;
+    }
+
     await nativeSaver.saveFile({
       filename,
       mimeType: blob.type || fallbackMimeType,
@@ -868,6 +888,54 @@ async function downloadBlob(blob: Blob, filename: string, fallbackMimeType = "ap
   link.click();
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function downloadBlobInChunks(
+  nativeSaver: NonNullable<NonNullable<Window["Capacitor"]>["Plugins"]>["DownloadSaver"],
+  blob: Blob,
+  filename: string,
+  fallbackMimeType: string
+) {
+  if (
+    !nativeSaver?.beginFile ||
+    !nativeSaver.appendFileChunk ||
+    !nativeSaver.finishFile ||
+    !nativeSaver.abortFile
+  ) {
+    throw new Error("Chunked Android saver is unavailable.");
+  }
+
+  const session = await nativeSaver.beginFile({
+    filename,
+    mimeType: blob.type || fallbackMimeType
+  });
+
+  const chunkSize = 256 * 1024;
+  let chunkCount = 0;
+  try {
+    for (let offset = 0; offset < blob.size; offset += chunkSize) {
+      const chunk = blob.slice(offset, Math.min(offset + chunkSize, blob.size));
+      await nativeSaver.appendFileChunk({
+        sessionId: session.sessionId,
+        base64Data: await blobToBase64Payload(chunk)
+      });
+      chunkCount += 1;
+
+      if (chunkCount === 1 || chunkCount % 25 === 0) {
+        void recordAppLog(
+          "info",
+          `Android chunked save progress: ${filename} ${Math.min(offset + chunkSize, blob.size)}/${blob.size}`
+        );
+      }
+    }
+
+    await nativeSaver.finishFile({ sessionId: session.sessionId });
+    void recordAppLog("info", `Android chunked save complete: ${filename} ${blob.size} bytes`);
+  } catch (error) {
+    await nativeSaver.abortFile({ sessionId: session.sessionId }).catch(() => undefined);
+    void recordAppLog("error", `Android chunked save failed: ${filename}`, error);
+    throw error;
+  }
 }
 
 function blobToBase64Payload(blob: Blob): Promise<string> {
