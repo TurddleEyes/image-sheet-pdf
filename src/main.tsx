@@ -5,6 +5,7 @@ import {
   ArrowUp,
   Download,
   FileImage,
+  FileText,
   GripVertical,
   ImagePlus,
   Layers,
@@ -26,6 +27,12 @@ declare global {
             mimeType: string;
             base64Data: string;
           }) => Promise<{ uri?: string }>;
+        };
+        AppLog?: {
+          appendLog: (options: { level: string; message: string }) => Promise<void>;
+          readLog: () => Promise<{ log?: string }>;
+          saveLog: (options: { filename: string }) => Promise<{ uri?: string }>;
+          clearLog: () => Promise<void>;
         };
       };
     };
@@ -73,6 +80,7 @@ const pageFormats: Record<PageSize, { portrait: [number, number]; label: string 
 
 const releasesUrl = "https://github.com/TurddleEyes/image-sheet-pdf/releases/latest";
 const latestReleaseApiUrl = "https://api.github.com/repos/TurddleEyes/image-sheet-pdf/releases/latest";
+const localLogKey = "image-sheet-pdf-client-log";
 
 function App() {
   const [images, setImages] = useState<SheetImage[]>([]);
@@ -86,6 +94,14 @@ function App() {
     () => images.reduce((sum, image) => sum + image.file.size, 0),
     [images]
   );
+
+  useEffect(() => {
+    installClientLoggers();
+    void recordAppLog(
+      "info",
+      `App mounted. version=${packageInfo.version} platform=${window.Capacitor?.getPlatform?.() ?? "web"}`
+    );
+  }, []);
 
   useEffect(() => {
     if (!isAndroidApp()) {
@@ -103,6 +119,7 @@ function App() {
         }
       })
       .catch(() => {
+        void recordAppLog("warn", "Android update check failed.");
         setStatus("Ready. Update check could not reach GitHub.");
       });
   }, []);
@@ -110,9 +127,17 @@ function App() {
   function addFiles(fileList: FileList | File[]) {
     const files = Array.from(fileList).filter((file) => file.type.startsWith("image/"));
     if (!files.length) {
+      void recordAppLog("warn", "Image picker returned no supported image files.");
       setStatus("No image files were selected.");
       return;
     }
+
+    void recordAppLog(
+      "info",
+      `Adding ${files.length} image(s): ${files
+        .map((file) => `${file.name} ${file.type || "unknown"} ${file.size} bytes`)
+        .join("; ")}`
+    );
 
     const nextImages: SheetImage[] = files.map((file) => {
       const image: SheetImage = {
@@ -153,6 +178,7 @@ function App() {
 
   async function generateThumbnail(image: SheetImage) {
     try {
+      void recordAppLog("info", `Thumbnail start: ${image.name}`);
       const thumbnail = await createThumbnail(image.file);
       setImages((current) =>
         current.map((item) => {
@@ -167,8 +193,10 @@ function App() {
           };
         })
       );
+      void recordAppLog("info", `Thumbnail ready: ${image.name} ${thumbnail.width}x${thumbnail.height}`);
     } catch (error) {
       console.warn(error);
+      void recordAppLog("error", `Thumbnail failed: ${image.name}`, error);
       setImages((current) =>
         current.map((item) => (item.id === image.id ? { ...item, status: "error" } : item))
       );
@@ -248,6 +276,7 @@ function App() {
 
     setExportState("pdf");
     setStatus("Building PDF...");
+    void recordAppLog("info", `PDF export start. images=${images.length}`);
 
     try {
       const { default: jsPDF } = await import("jspdf");
@@ -286,8 +315,10 @@ function App() {
 
       await downloadBlob(pdf.output("blob"), `image-sheets-${dateStamp()}.pdf`, "application/pdf");
       setStatus(`Exported ${images.length} page${images.length === 1 ? "" : "s"} as a PDF.`);
+      void recordAppLog("info", "PDF export complete.");
     } catch (error) {
       console.error(error);
+      void recordAppLog("error", "PDF export failed.", error);
       setStatus("Export failed. Try removing unsupported or very large image files.");
     } finally {
       setExportState("idle");
@@ -299,6 +330,10 @@ function App() {
 
     setExportState("stack");
     setStatus("Stacking images...");
+    void recordAppLog(
+      "info",
+      `Stack export start. images=${images.length} format=${settings.stackFormat} quality=${settings.quality}`
+    );
 
     try {
       if (!isAndroidApp()) {
@@ -307,9 +342,11 @@ function App() {
           setStatus(
             `Exported a ${result.width} x ${result.height} stacked ${result.format.toUpperCase()}.`
           );
+          void recordAppLog("info", `Stack raster export complete. ${result.width}x${result.height}`);
           return;
         } catch (error) {
           console.warn(error);
+          void recordAppLog("warn", "Local stacker unavailable; using browser stack fallback.", error);
           setStatus("Local stacker unavailable; trying browser export...");
         }
       }
@@ -323,6 +360,7 @@ function App() {
       if (width > maxCanvasDimension || height > maxCanvasDimension || width * height > maxCanvasArea) {
         if (isAndroidApp()) {
           setStatus("That stack is too large for the phone build. Use the Windows EXE for full-size stacks.");
+          void recordAppLog("warn", `Android stack refused. size=${width}x${height}`);
           return;
         }
         await exportStackedSvg(loadedImages, width, height);
@@ -350,8 +388,10 @@ function App() {
       const blob = await canvasToBlob(canvas);
       await downloadBlob(blob, `stacked-images-${dateStamp()}.png`, "image/png");
       setStatus(`Exported a ${width} x ${height} stacked PNG.`);
+      void recordAppLog("info", `Stack browser export complete. ${width}x${height}`);
     } catch (error) {
       console.error(error);
+      void recordAppLog("error", "Stack export failed.", error);
       setStatus("Stack export failed. Try removing unsupported or very large image files.");
     } finally {
       setExportState("idle");
@@ -396,6 +436,7 @@ function App() {
       "image/svg+xml"
     );
     setStatus(`Canvas limit avoided: exported a ${width} x ${height} stacked SVG.`);
+    void recordAppLog("info", `Stack SVG export complete. ${width}x${height}`);
   }
 
   async function exportStackedRaster() {
@@ -423,6 +464,28 @@ function App() {
     return { width, height, format: settings.stackFormat };
   }
 
+  async function saveCrashLog() {
+    setStatus("Saving crash log...");
+    void recordAppLog("info", "User requested crash log export.");
+
+    try {
+      const filename = `image-sheet-pdf-crash-log-${dateStamp()}.txt`;
+      const nativeLog = window.Capacitor?.Plugins?.AppLog;
+      if (isAndroidApp() && nativeLog) {
+        await nativeLog.saveLog({ filename });
+        setStatus(`Crash log saved to Downloads as ${filename}.`);
+        return;
+      }
+
+      const log = readLocalClientLog() || "No crash log entries yet.\n";
+      await downloadBlob(new Blob([log], { type: "text/plain" }), filename, "text/plain");
+      setStatus(`Crash log saved as ${filename}.`);
+    } catch (error) {
+      console.error(error);
+      setStatus("Could not save crash log.");
+    }
+  }
+
   return (
     <main className="app">
       <section className="workspace" aria-label="Image to PDF workspace">
@@ -432,6 +495,10 @@ function App() {
             <h1>Arrange images into one-page sheets</h1>
           </div>
           <div className="topActions">
+            <button type="button" onClick={saveCrashLog} title="Save crash log">
+              <FileText size={18} aria-hidden="true" />
+              Save Log
+            </button>
             <button
               type="button"
               onClick={exportStackedImage}
@@ -650,7 +717,7 @@ function App() {
         <div className="paper">
           {images[0] ? (
             <img
-              src={images[0].url}
+              src={images[0].thumbUrl ?? images[0].url}
               alt={`First page preview: ${images[0].name}`}
               className={settings.fit}
             />
@@ -869,6 +936,75 @@ function releaseImageUrls(image: SheetImage) {
   URL.revokeObjectURL(image.url);
   if (image.thumbUrl) {
     URL.revokeObjectURL(image.thumbUrl);
+  }
+}
+
+let clientLoggersInstalled = false;
+
+function installClientLoggers() {
+  if (clientLoggersInstalled) {
+    return;
+  }
+  clientLoggersInstalled = true;
+
+  window.addEventListener("error", (event) => {
+    void recordAppLog(
+      "error",
+      `Window error: ${event.message} at ${event.filename}:${event.lineno}:${event.colno}`,
+      event.error
+    );
+  });
+
+  window.addEventListener("unhandledrejection", (event) => {
+    void recordAppLog("error", "Unhandled promise rejection.", event.reason);
+  });
+}
+
+async function recordAppLog(level: "info" | "warn" | "error", message: string, details?: unknown) {
+  const detailText = details ? `\n${formatLogDetails(details)}` : "";
+  const line = `${new Date().toISOString()} [${level.toUpperCase()}] ${message}${detailText}`;
+  appendLocalClientLog(line);
+
+  const nativeLog = window.Capacitor?.Plugins?.AppLog;
+  if (isAndroidApp() && nativeLog) {
+    try {
+      await nativeLog.appendLog({ level: level.toUpperCase(), message: `${message}${detailText}` });
+    } catch {
+      // Local storage keeps a fallback copy if the native bridge is unavailable.
+    }
+  }
+}
+
+function appendLocalClientLog(line: string) {
+  try {
+    const maxCharacters = 180_000;
+    const current = localStorage.getItem(localLogKey) ?? "";
+    const next = `${current}${line}\n`;
+    localStorage.setItem(localLogKey, next.slice(Math.max(0, next.length - maxCharacters)));
+  } catch {
+    // Logging cannot be allowed to create app failures.
+  }
+}
+
+function readLocalClientLog() {
+  try {
+    return localStorage.getItem(localLogKey) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function formatLogDetails(details: unknown) {
+  if (details instanceof Error) {
+    return details.stack ?? `${details.name}: ${details.message}`;
+  }
+  if (typeof details === "string") {
+    return details;
+  }
+  try {
+    return JSON.stringify(details);
+  } catch {
+    return String(details);
   }
 }
 
