@@ -42,8 +42,10 @@ type SheetImage = {
   file: File;
   name: string;
   url: string;
+  thumbUrl?: string;
   width?: number;
   height?: number;
+  status: "loading" | "ready" | "error";
 };
 
 type PdfSettings = {
@@ -112,15 +114,17 @@ function App() {
       return;
     }
 
-    const nextImages = files.map((file) => {
+    const nextImages: SheetImage[] = files.map((file) => {
       const image: SheetImage = {
         id: `${file.name}-${file.lastModified}-${uniqueId()}`,
         file,
         name: file.name,
-        url: URL.createObjectURL(file)
+        url: URL.createObjectURL(file),
+        status: "loading"
       };
 
       if (isAndroidApp()) {
+        generateThumbnail(image);
         return image;
       }
 
@@ -134,12 +138,41 @@ function App() {
           )
         );
       };
+      probe.onerror = () => {
+        setImages((current) =>
+          current.map((item) => (item.id === image.id ? { ...item, status: "error" } : item))
+        );
+      };
       probe.src = image.url;
-      return image;
+      return { ...image, status: "ready" as const };
     });
 
     setImages((current) => [...current, ...nextImages]);
     setStatus(`${files.length} image${files.length === 1 ? "" : "s"} added.`);
+  }
+
+  async function generateThumbnail(image: SheetImage) {
+    try {
+      const thumbnail = await createThumbnail(image.file);
+      setImages((current) =>
+        current.map((item) => {
+          if (item.id !== image.id) return item;
+          if (item.thumbUrl) URL.revokeObjectURL(item.thumbUrl);
+          return {
+            ...item,
+            thumbUrl: thumbnail.url,
+            width: thumbnail.width,
+            height: thumbnail.height,
+            status: "ready"
+          };
+        })
+      );
+    } catch (error) {
+      console.warn(error);
+      setImages((current) =>
+        current.map((item) => (item.id === image.id ? { ...item, status: "error" } : item))
+      );
+    }
   }
 
   function handlePickerChange(event: ChangeEvent<HTMLInputElement>) {
@@ -176,7 +209,7 @@ function App() {
   function removeImage(id: string) {
     setImages((current) => {
       const image = current.find((item) => item.id === id);
-      if (image) URL.revokeObjectURL(image.url);
+      if (image) releaseImageUrls(image);
       return current.filter((item) => item.id !== id);
     });
   }
@@ -189,7 +222,7 @@ function App() {
   }
 
   function clearImages() {
-    images.forEach((image) => URL.revokeObjectURL(image.url));
+    images.forEach(releaseImageUrls);
     setImages([]);
     setStatus("Image list cleared.");
   }
@@ -564,10 +597,10 @@ function App() {
                 }}
               >
                 <div className="thumbWrap">
-                  {isAndroidApp() ? (
-                    <FileImage size={28} aria-hidden="true" />
+                  {image.thumbUrl || (!isAndroidApp() && image.url) ? (
+                    <img src={image.thumbUrl ?? image.url} alt={image.name} />
                   ) : (
-                    <img src={image.url} alt={image.name} />
+                    <FileImage size={28} aria-hidden="true" />
                   )}
                   <span>{index + 1}</span>
                 </div>
@@ -576,7 +609,9 @@ function App() {
                   <span>
                     {image.width && image.height
                       ? `${image.width} x ${image.height}`
-                      : "Reading dimensions"}
+                      : image.status === "error"
+                        ? "Preview unavailable"
+                        : "Preparing preview"}
                   </span>
                 </div>
                 <div className="itemActions">
@@ -638,6 +673,59 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
+async function createThumbnail(file: File) {
+  if ("createImageBitmap" in window) {
+    const bitmap = await createImageBitmap(file);
+    try {
+      return await bitmapToThumbnail(bitmap, bitmap.width, bitmap.height);
+    } finally {
+      bitmap.close();
+    }
+  }
+
+  const url = URL.createObjectURL(file);
+  try {
+    const image = await loadImage(url);
+    return await imageToThumbnail(image, image.naturalWidth, image.naturalHeight);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function bitmapToThumbnail(source: ImageBitmap, width: number, height: number) {
+  return drawThumbnail(source, width, height);
+}
+
+async function imageToThumbnail(source: HTMLImageElement, width: number, height: number) {
+  return drawThumbnail(source, width, height);
+}
+
+async function drawThumbnail(
+  source: CanvasImageSource,
+  sourceWidth: number,
+  sourceHeight: number
+) {
+  const maxSide = 256;
+  const scale = Math.min(1, maxSide / Math.max(sourceWidth, sourceHeight));
+  const width = Math.max(1, Math.round(sourceWidth * scale));
+  const height = Math.max(1, Math.round(sourceHeight * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("Canvas is unavailable.");
+  }
+
+  context.drawImage(source, 0, 0, width, height);
+  const blob = await canvasToBlob(canvas, "image/jpeg", 0.78);
+  return {
+    url: URL.createObjectURL(blob),
+    width: sourceWidth,
+    height: sourceHeight
+  };
+}
+
 async function loadImagesSequentially(items: SheetImage[]) {
   const loadedImages: HTMLImageElement[] = [];
   for (const item of items) {
@@ -661,7 +749,11 @@ function imageToJpeg(image: HTMLImageElement, quality: number, background: "whit
   return canvas.toDataURL("image/jpeg", quality);
 }
 
-function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
+function canvasToBlob(
+  canvas: HTMLCanvasElement,
+  mimeType = "image/png",
+  quality?: number
+): Promise<Blob> {
   return new Promise((resolve, reject) => {
     canvas.toBlob((blob) => {
       if (blob) {
@@ -669,7 +761,7 @@ function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
       } else {
         reject(new Error("Could not create image blob."));
       }
-    }, "image/png");
+    }, mimeType, quality);
   });
 }
 
@@ -771,6 +863,13 @@ function isAndroidApp() {
 
 function uniqueId() {
   return crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function releaseImageUrls(image: SheetImage) {
+  URL.revokeObjectURL(image.url);
+  if (image.thumbUrl) {
+    URL.revokeObjectURL(image.thumbUrl);
+  }
 }
 
 async function checkForAndroidUpdate() {
