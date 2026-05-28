@@ -13,7 +13,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview --host 127.0.0.1",
     "electron": "npm run build && electron .",
-    "dist:win": "npm run build && electron-builder --win nsis",
+    "dist:win": "npm run build && electron-builder --win nsis --publish never",
     "publish:win": "npm run build && electron-builder --win nsis --publish always",
     "android:init": "npm run build && cap add android",
     "android:sync": "npm run build && cap sync android",
