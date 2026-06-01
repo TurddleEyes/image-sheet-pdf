@@ -44,6 +44,22 @@ declare global {
           saveLog: (options: { filename: string }) => Promise<{ uri?: string }>;
           clearLog: () => Promise<void>;
         };
+        NativeStacker?: {
+          beginStack: (options: {
+            filename: string;
+            background: "white" | "black";
+          }) => Promise<{ sessionId: string }>;
+          beginImage: (options: { sessionId: string; name: string }) => Promise<void>;
+          appendImageChunk: (options: {
+            sessionId: string;
+            base64Data: string;
+          }) => Promise<void>;
+          finishImage: (options: { sessionId: string }) => Promise<void>;
+          finishStack: (options: {
+            sessionId: string;
+          }) => Promise<{ uri?: string; width: number; height: number; format: string }>;
+          abortStack: (options: { sessionId: string }) => Promise<void>;
+        };
       };
     };
   }
@@ -346,6 +362,22 @@ function App() {
     );
 
     try {
+      if (isAndroidApp()) {
+        const result = await exportAndroidNativeStack();
+        const pngNote =
+          settings.stackFormat === "jpeg"
+            ? " Android used PNG because this stack may be taller than normal JPEG supports."
+            : "";
+        setStatus(
+          `Exported a ${result.width} x ${result.height} stacked ${result.format.toUpperCase()}.${pngNote}`
+        );
+        void recordAppLog(
+          "info",
+          `Android native stack complete. ${result.width}x${result.height} ${result.format}`
+        );
+        return;
+      }
+
       if (!isAndroidApp()) {
         try {
           const result = await exportStackedRaster();
@@ -472,6 +504,72 @@ function App() {
     await downloadBlob(blob, `stacked-images-${dateStamp()}.${extension}`, blob.type);
 
     return { width, height, format: settings.stackFormat };
+  }
+
+  async function exportAndroidNativeStack() {
+    const nativeStacker = window.Capacitor?.Plugins?.NativeStacker;
+    if (!nativeStacker) {
+      throw new Error("Native Android stacker is unavailable.");
+    }
+
+    if (settings.stackFormat === "jpeg") {
+      void recordAppLog(
+        "info",
+        "Android native stacker is using PNG output because tall JPEG files cannot exceed 65535 pixels in one dimension."
+      );
+    }
+
+    const filename = `stacked-images-${dateStamp()}.png`;
+    const session = await nativeStacker.beginStack({
+      filename,
+      background: settings.background
+    });
+    const chunkSize = 256 * 1024;
+
+    try {
+      for (let imageIndex = 0; imageIndex < images.length; imageIndex += 1) {
+        const image = images[imageIndex];
+        setStatus(`Preparing stack image ${imageIndex + 1} of ${images.length}...`);
+        void recordAppLog(
+          "info",
+          `Android native stack image start: ${image.name} ${image.file.size} bytes`
+        );
+
+        await nativeStacker.beginImage({
+          sessionId: session.sessionId,
+          name: image.name
+        });
+
+        let chunkCount = 0;
+        for (let offset = 0; offset < image.file.size; offset += chunkSize) {
+          const chunk = image.file.slice(offset, Math.min(offset + chunkSize, image.file.size));
+          await nativeStacker.appendImageChunk({
+            sessionId: session.sessionId,
+            base64Data: await blobToBase64Payload(chunk)
+          });
+          chunkCount += 1;
+
+          if (chunkCount === 1 || chunkCount % 25 === 0) {
+            void recordAppLog(
+              "info",
+              `Android native stack image progress: ${image.name} ${Math.min(
+                offset + chunkSize,
+                image.file.size
+              )}/${image.file.size}`
+            );
+          }
+        }
+
+        await nativeStacker.finishImage({ sessionId: session.sessionId });
+      }
+
+      setStatus("Writing the stacked PNG to Downloads...");
+      return await nativeStacker.finishStack({ sessionId: session.sessionId });
+    } catch (error) {
+      await nativeStacker.abortStack({ sessionId: session.sessionId }).catch(() => undefined);
+      void recordAppLog("error", "Android native stack failed.", error);
+      throw error;
+    }
   }
 
   async function saveCrashLog() {

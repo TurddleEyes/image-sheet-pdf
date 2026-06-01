@@ -10,6 +10,7 @@ public class MainActivity extends BridgeActivity {
         AppLogStore.install(this);
         registerPlugin(DownloadSaverPlugin.class);
         registerPlugin(AppLogPlugin.class);
+        registerPlugin(NativeStackerPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }
