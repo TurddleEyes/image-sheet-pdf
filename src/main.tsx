@@ -669,7 +669,7 @@ function App() {
             <ImagePlus size={20} aria-hidden="true" />
             Add images
           </button>
-          <p>Drop files here, or add them from your computer.</p>
+          <p>{isAndroidApp() ? "Add photos from your phone." : "Drop files here, or add them from your computer."}</p>
         </section>
 
         <section className="controls" aria-label="PDF settings">
@@ -757,7 +757,7 @@ function App() {
               <option value="jpeg">JPEG</option>
             </select>
           </label>
-          <label>
+          <label className="qualityControl">
             Quality
             <input
               type="range"

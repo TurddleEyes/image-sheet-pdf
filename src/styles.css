@@ -205,13 +205,18 @@ h1 {
 .controls {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-  gap: 10px;
+  gap: 12px;
   margin-bottom: 18px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-soft);
 }
 
 .controls label {
   display: grid;
   gap: 7px;
+  min-width: 0;
   color: var(--label);
   font-size: 0.82rem;
   font-weight: 800;
@@ -224,6 +229,7 @@ input[type="range"] {
 }
 
 select {
+  min-width: 0;
   min-height: 40px;
   border-radius: 8px;
   padding: 0 10px;
@@ -236,6 +242,21 @@ select {
   color: var(--muted);
   font-size: 0.84rem;
   font-weight: 600;
+}
+
+.qualityControl {
+  grid-column: 1 / -1;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 12px;
+}
+
+.qualityControl input {
+  grid-column: 2;
+}
+
+.qualityControl span {
+  grid-column: 3;
 }
 
 .listbar {
@@ -418,7 +439,7 @@ select {
 @media (max-width: 620px) {
   .workspace,
   .previewPanel {
-    padding: 18px;
+    padding: 14px;
   }
 
   .topbar,
@@ -436,8 +457,41 @@ select {
     flex: 1 1 140px;
   }
 
+  .dropzone {
+    display: grid;
+    gap: 10px;
+    margin: 16px 0 14px;
+    padding: 12px;
+  }
+
+  .dropzone button {
+    width: 100%;
+  }
+
+  .dropzone p {
+    font-size: 0.92rem;
+    text-align: center;
+  }
+
   .controls {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .controls label {
+    gap: 5px;
+    font-size: 0.76rem;
+  }
+
+  select {
+    min-height: 44px;
+    padding: 0 8px;
+    font-size: 0.92rem;
+  }
+
+  .qualityControl {
+    grid-template-columns: auto minmax(0, 1fr) auto;
   }
 
   .imageItem {
@@ -451,5 +505,11 @@ select {
   .itemActions {
     grid-column: 1 / -1;
     justify-content: flex-end;
+  }
+}
+
+@media (max-width: 380px) {
+  .controls {
+    grid-template-columns: 1fr;
   }
 }

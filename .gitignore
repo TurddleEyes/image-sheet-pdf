@@ -4,6 +4,7 @@ android-sdk/
 android-cmdline-tools-temp/
 commandlinetools-win-latest.zip
 .env
+.codex-remote-attachments/
 *.log
 *.jks
 *.keystore
