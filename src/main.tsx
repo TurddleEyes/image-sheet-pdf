@@ -69,6 +69,7 @@ type PageSize = "letter" | "a4";
 type Orientation = "portrait" | "landscape" | "auto";
 type FitMode = "contain" | "cover";
 type StackFormat = "png" | "jpeg";
+type ThemeMode = "system" | "light" | "dark";
 
 type SheetImage = {
   id: string;
@@ -107,10 +108,12 @@ const pageFormats: Record<PageSize, { portrait: [number, number]; label: string 
 const releasesUrl = "https://github.com/TurddleEyes/image-sheet-pdf/releases/latest";
 const latestReleaseApiUrl = "https://api.github.com/repos/TurddleEyes/image-sheet-pdf/releases/latest";
 const localLogKey = "image-sheet-pdf-client-log";
+const themeModeKey = "image-sheet-pdf-theme-mode";
 
 function App() {
   const [images, setImages] = useState<SheetImage[]>([]);
   const [settings, setSettings] = useState<PdfSettings>(initialSettings);
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => readThemeModePreference());
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [exportState, setExportState] = useState<"idle" | "pdf" | "stack">("idle");
   const [status, setStatus] = useState("Choose images to start.");
@@ -128,6 +131,24 @@ function App() {
       `App mounted. version=${packageInfo.version} platform=${window.Capacitor?.getPlatform?.() ?? "web"}`
     );
   }, []);
+
+  useEffect(() => {
+    applyThemeMode(themeMode);
+    saveThemeModePreference(themeMode);
+
+    if (themeMode !== "system") {
+      return undefined;
+    }
+
+    const media = window.matchMedia?.("(prefers-color-scheme: dark)");
+    if (!media) {
+      return undefined;
+    }
+
+    const handleSystemThemeChange = () => applyThemeMode("system");
+    media.addEventListener("change", handleSystemThemeChange);
+    return () => media.removeEventListener("change", handleSystemThemeChange);
+  }, [themeMode]);
 
   useEffect(() => {
     if (!isAndroidApp()) {
@@ -711,6 +732,17 @@ function App() {
             </select>
           </label>
           <label>
+            Theme
+            <select
+              value={themeMode}
+              onChange={(event) => setThemeMode(event.target.value as ThemeMode)}
+            >
+              <option value="system">System</option>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
+          </label>
+          <label>
             Stack
             <select
               value={settings.stackFormat}
@@ -1092,6 +1124,55 @@ function dateStamp() {
 
 function isAndroidApp() {
   return window.Capacitor?.getPlatform?.() === "android";
+}
+
+function readThemeModePreference(): ThemeMode {
+  try {
+    const saved = localStorage.getItem(themeModeKey);
+    return saved === "light" || saved === "dark" || saved === "system" ? saved : "system";
+  } catch {
+    return "system";
+  }
+}
+
+function saveThemeModePreference(themeMode: ThemeMode) {
+  try {
+    localStorage.setItem(themeModeKey, themeMode);
+  } catch {
+    // Theme preference is optional; system mode remains the fallback.
+  }
+}
+
+function applyThemeMode(themeMode: ThemeMode) {
+  const root = document.documentElement;
+  const resolvedTheme = resolveThemeMode(themeMode);
+
+  if (themeMode === "system") {
+    root.removeAttribute("data-theme");
+  } else {
+    root.dataset.theme = themeMode;
+  }
+
+  root.style.colorScheme = resolvedTheme;
+  setThemeColor(resolvedTheme);
+}
+
+function resolveThemeMode(themeMode: ThemeMode): "light" | "dark" {
+  if (themeMode !== "system") {
+    return themeMode;
+  }
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function setThemeColor(theme: "light" | "dark") {
+  const color = theme === "dark" ? "#151b1c" : "#eef0e7";
+  let meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+  if (!meta) {
+    meta = document.createElement("meta");
+    meta.name = "theme-color";
+    document.head.appendChild(meta);
+  }
+  meta.content = color;
 }
 
 function uniqueId() {
