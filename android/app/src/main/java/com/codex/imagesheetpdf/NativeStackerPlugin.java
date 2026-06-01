@@ -1,8 +1,10 @@
 package com.codex.imagesheetpdf;
 
 import android.Manifest;
+import android.app.Activity;
 import android.content.ContentResolver;
 import android.content.ContentValues;
+import android.content.Intent;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
@@ -10,11 +12,14 @@ import android.os.Environment;
 import android.provider.MediaStore;
 import android.util.Base64;
 
+import androidx.activity.result.ActivityResult;
+
 import com.getcapacitor.JSObject;
 import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
@@ -38,12 +43,17 @@ public class NativeStackerPlugin extends Plugin {
 
     @PluginMethod
     public void beginStack(PluginCall call) {
+        if (wantsPicker(call)) {
+            beginPickedStack(call);
+            return;
+        }
+
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && getPermissionState("writeStorage") != PermissionState.GRANTED) {
             requestPermissionForAlias("writeStorage", call, "storagePermsCallback");
             return;
         }
 
-        createSession(call);
+        createSession(call, null);
     }
 
     @PluginMethod
@@ -172,13 +182,37 @@ public class NativeStackerPlugin extends Plugin {
     @PermissionCallback
     private void storagePermsCallback(PluginCall call) {
         if (getPermissionState("writeStorage") == PermissionState.GRANTED) {
-            createSession(call);
+            createSession(call, null);
         } else {
             call.reject("Storage permission is required to save to Downloads.");
         }
     }
 
-    private void createSession(PluginCall call) {
+    @ActivityCallback
+    private void pickedStackCallback(PluginCall call, ActivityResult result) {
+        if (call == null) {
+            return;
+        }
+
+        if (result.getResultCode() != Activity.RESULT_OK || result.getData() == null || result.getData().getData() == null) {
+            call.reject("Stack save was cancelled.");
+            return;
+        }
+
+        createSession(call, result.getData().getData());
+    }
+
+    private void beginPickedStack(PluginCall call) {
+        String filename = call.getString("filename", "stacked-images.png");
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("image/png");
+        intent.putExtra(Intent.EXTRA_TITLE, ensurePngName(filename));
+        intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        startActivityForResult(call, intent, "pickedStackCallback");
+    }
+
+    private void createSession(PluginCall call, Uri outputUri) {
         String filename = call.getString("filename", "stacked-images.png");
         String background = call.getString("background", "white");
 
@@ -190,7 +224,7 @@ public class NativeStackerPlugin extends Plugin {
                 return;
             }
 
-            StackSession session = new StackSession(id, filename, backgroundColor(background), directory);
+            StackSession session = new StackSession(id, filename, backgroundColor(background), directory, outputUri);
             sessions.put(id, session);
 
             JSObject result = new JSObject();
@@ -199,6 +233,10 @@ public class NativeStackerPlugin extends Plugin {
         } catch (Exception error) {
             call.reject("Could not start native stacker: " + error.getMessage(), error);
         }
+    }
+
+    private boolean wantsPicker(PluginCall call) {
+        return "ask".equalsIgnoreCase(call.getString("destination", "downloads"));
     }
 
     private StackSession getSession(PluginCall call) {
@@ -211,6 +249,16 @@ public class NativeStackerPlugin extends Plugin {
     }
 
     private Uri writeStackToDownloads(StackSession session, PngStackWriter.StackInfo info) throws Exception {
+        if (session.outputUri != null) {
+            try (OutputStream output = getContext().getContentResolver().openOutputStream(session.outputUri)) {
+                if (output == null) {
+                    throw new IllegalStateException("Could not open selected file.");
+                }
+                PngStackWriter.write(output, session.images, session.backgroundColor);
+            }
+            return session.outputUri;
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             ContentValues values = new ContentValues();
             values.put(MediaStore.Downloads.DISPLAY_NAME, ensurePngName(session.filename));
@@ -305,15 +353,17 @@ public class NativeStackerPlugin extends Plugin {
         final String filename;
         final int backgroundColor;
         final File directory;
+        final Uri outputUri;
         final ArrayList<File> images = new ArrayList<>();
         File currentFile;
         OutputStream currentOutput;
 
-        StackSession(String id, String filename, int backgroundColor, File directory) {
+        StackSession(String id, String filename, int backgroundColor, File directory, Uri outputUri) {
             this.id = id;
             this.filename = filename;
             this.backgroundColor = backgroundColor;
             this.directory = directory;
+            this.outputUri = outputUri;
         }
     }
 }

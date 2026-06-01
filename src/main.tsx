@@ -31,6 +31,10 @@ declare global {
             filename: string;
             mimeType: string;
           }) => Promise<{ sessionId: string }>;
+          beginPickedFile?: (options: {
+            filename: string;
+            mimeType: string;
+          }) => Promise<{ sessionId: string }>;
           appendFileChunk?: (options: {
             sessionId: string;
             base64Data: string;
@@ -48,6 +52,7 @@ declare global {
           beginStack: (options: {
             filename: string;
             background: "white" | "black";
+            destination?: SaveDestination;
           }) => Promise<{ sessionId: string }>;
           beginImage: (options: { sessionId: string; name: string }) => Promise<void>;
           appendImageChunk: (options: {
@@ -70,6 +75,7 @@ type Orientation = "portrait" | "landscape" | "auto";
 type FitMode = "contain" | "cover";
 type StackFormat = "png" | "jpeg";
 type ThemeMode = "system" | "light" | "dark";
+type SaveDestination = "downloads" | "ask";
 
 type SheetImage = {
   id: string;
@@ -89,6 +95,9 @@ type PdfSettings = {
   background: "white" | "black";
   stackFormat: StackFormat;
   quality: number;
+  outputName: string;
+  saveDestination: SaveDestination;
+  clearAfterExport: boolean;
 };
 
 const initialSettings: PdfSettings = {
@@ -97,7 +106,10 @@ const initialSettings: PdfSettings = {
   fit: "contain",
   background: "white",
   stackFormat: "png",
-  quality: 0.92
+  quality: 0.92,
+  outputName: "",
+  saveDestination: "downloads",
+  clearAfterExport: false
 };
 
 const pageFormats: Record<PageSize, { portrait: [number, number]; label: string }> = {
@@ -109,10 +121,15 @@ const releasesUrl = "https://github.com/TurddleEyes/image-sheet-pdf/releases/lat
 const latestReleaseApiUrl = "https://api.github.com/repos/TurddleEyes/image-sheet-pdf/releases/latest";
 const localLogKey = "image-sheet-pdf-client-log";
 const themeModeKey = "image-sheet-pdf-theme-mode";
+const rememberSettingsKey = "image-sheet-pdf-remember-settings";
+const exportSettingsKey = "image-sheet-pdf-export-settings";
 
 function App() {
   const [images, setImages] = useState<SheetImage[]>([]);
-  const [settings, setSettings] = useState<PdfSettings>(initialSettings);
+  const [rememberSettings, setRememberSettings] = useState(() => readRememberSettingsPreference());
+  const [settings, setSettings] = useState<PdfSettings>(() =>
+    readSavedExportSettings(readRememberSettingsPreference())
+  );
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => readThemeModePreference());
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [exportState, setExportState] = useState<"idle" | "pdf" | "stack">("idle");
@@ -149,6 +166,15 @@ function App() {
     media.addEventListener("change", handleSystemThemeChange);
     return () => media.removeEventListener("change", handleSystemThemeChange);
   }, [themeMode]);
+
+  useEffect(() => {
+    saveRememberSettingsPreference(rememberSettings);
+    if (rememberSettings) {
+      saveExportSettings(settings);
+    } else {
+      clearSavedExportSettings();
+    }
+  }, [rememberSettings, settings]);
 
   useEffect(() => {
     if (!isAndroidApp()) {
@@ -302,6 +328,21 @@ function App() {
     setStatus("Image list cleared.");
   }
 
+  function clearExportedImages() {
+    images.forEach(releaseImageUrls);
+    setImages([]);
+  }
+
+  function finishExport(message: string) {
+    if (settings.clearAfterExport) {
+      clearExportedImages();
+      setStatus(`${message} Image list cleared.`);
+      return;
+    }
+
+    setStatus(message);
+  }
+
   function pageDimensions(image?: SheetImage): { width: number; height: number; orientation: "p" | "l" } {
     const base = pageFormats[settings.pageSize].portrait;
     const explicit =
@@ -360,8 +401,13 @@ function App() {
         setStatus(`Added page ${index + 1} of ${images.length}.`);
       }
 
-      await downloadBlob(pdf.output("blob"), `image-sheets-${dateStamp()}.pdf`, "application/pdf");
-      setStatus(`Exported ${images.length} page${images.length === 1 ? "" : "s"} as a PDF.`);
+      await downloadBlob(
+        pdf.output("blob"),
+        outputFilename(settings.outputName, "image-sheets", "pdf"),
+        "application/pdf",
+        settings.saveDestination
+      );
+      finishExport(`Exported ${images.length} page${images.length === 1 ? "" : "s"} as a PDF.`);
       void recordAppLog("info", "PDF export complete.");
     } catch (error) {
       console.error(error);
@@ -389,7 +435,7 @@ function App() {
           settings.stackFormat === "jpeg"
             ? " Android used PNG because this stack may be taller than normal JPEG supports."
             : "";
-        setStatus(
+        finishExport(
           `Exported a ${result.width} x ${result.height} stacked ${result.format.toUpperCase()}.${pngNote}`
         );
         void recordAppLog(
@@ -402,7 +448,7 @@ function App() {
       if (!isAndroidApp()) {
         try {
           const result = await exportStackedRaster();
-          setStatus(
+          finishExport(
             `Exported a ${result.width} x ${result.height} stacked ${result.format.toUpperCase()}.`
           );
           void recordAppLog("info", `Stack raster export complete. ${result.width}x${result.height}`);
@@ -449,8 +495,13 @@ function App() {
       });
 
       const blob = await canvasToBlob(canvas);
-      await downloadBlob(blob, `stacked-images-${dateStamp()}.png`, "image/png");
-      setStatus(`Exported a ${width} x ${height} stacked PNG.`);
+      await downloadBlob(
+        blob,
+        outputFilename(settings.outputName, "stacked-images", "png"),
+        "image/png",
+        settings.saveDestination
+      );
+      finishExport(`Exported a ${width} x ${height} stacked PNG.`);
       void recordAppLog("info", `Stack browser export complete. ${width}x${height}`);
     } catch (error) {
       console.error(error);
@@ -495,10 +546,11 @@ function App() {
 
     await downloadBlob(
       new Blob([svg], { type: "image/svg+xml;charset=utf-8" }),
-      `stacked-images-${dateStamp()}.svg`,
-      "image/svg+xml"
+      outputFilename(settings.outputName, "stacked-images", "svg"),
+      "image/svg+xml",
+      settings.saveDestination
     );
-    setStatus(`Canvas limit avoided: exported a ${width} x ${height} stacked SVG.`);
+    finishExport(`Canvas limit avoided: exported a ${width} x ${height} stacked SVG.`);
     void recordAppLog("info", `Stack SVG export complete. ${width}x${height}`);
   }
 
@@ -522,7 +574,12 @@ function App() {
     const width = response.headers.get("X-Stacked-Width") ?? "?";
     const height = response.headers.get("X-Stacked-Height") ?? "?";
     const extension = settings.stackFormat === "jpeg" ? "jpg" : "png";
-    await downloadBlob(blob, `stacked-images-${dateStamp()}.${extension}`, blob.type);
+    await downloadBlob(
+      blob,
+      outputFilename(settings.outputName, "stacked-images", extension),
+      blob.type,
+      settings.saveDestination
+    );
 
     return { width, height, format: settings.stackFormat };
   }
@@ -540,10 +597,11 @@ function App() {
       );
     }
 
-    const filename = `stacked-images-${dateStamp()}.png`;
+    const filename = outputFilename(settings.outputName, "stacked-images", "png");
     const session = await nativeStacker.beginStack({
       filename,
-      background: settings.background
+      background: settings.background,
+      destination: settings.saveDestination
     });
     const chunkSize = 256 * 1024;
 
@@ -584,7 +642,11 @@ function App() {
         await nativeStacker.finishImage({ sessionId: session.sessionId });
       }
 
-      setStatus("Writing the stacked PNG to Downloads...");
+      setStatus(
+        settings.saveDestination === "ask"
+          ? "Writing the stacked PNG..."
+          : "Writing the stacked PNG to Downloads..."
+      );
       return await nativeStacker.finishStack({ sessionId: session.sessionId });
     } catch (error) {
       await nativeStacker.abortStack({ sessionId: session.sessionId }).catch(() => undefined);
@@ -673,6 +735,35 @@ function App() {
         </section>
 
         <section className="controls" aria-label="PDF settings">
+          <label className="filenameControl">
+            Output name
+            <input
+              type="text"
+              inputMode="text"
+              value={settings.outputName}
+              placeholder="Auto name"
+              onChange={(event) =>
+                setSettings((current) => ({ ...current, outputName: event.target.value }))
+              }
+            />
+          </label>
+          {isAndroidApp() ? (
+            <label>
+              Save to
+              <select
+                value={settings.saveDestination}
+                onChange={(event) =>
+                  setSettings((current) => ({
+                    ...current,
+                    saveDestination: event.target.value as SaveDestination
+                  }))
+                }
+              >
+                <option value="downloads">Downloads</option>
+                <option value="ask">Ask each time</option>
+              </select>
+            </label>
+          ) : null}
           <label>
             Page
             <select
@@ -770,6 +861,27 @@ function App() {
               }
             />
             <span>{Math.round(settings.quality * 100)}%</span>
+          </label>
+          <label className="toggleControl">
+            <input
+              type="checkbox"
+              checked={settings.clearAfterExport}
+              onChange={(event) =>
+                setSettings((current) => ({
+                  ...current,
+                  clearAfterExport: event.target.checked
+                }))
+              }
+            />
+            <span>Clear list after export</span>
+          </label>
+          <label className="toggleControl">
+            <input
+              type="checkbox"
+              checked={rememberSettings}
+              onChange={(event) => setRememberSettings(event.target.checked)}
+            />
+            <span>Remember export settings</span>
           </label>
         </section>
 
@@ -989,16 +1101,22 @@ function escapeXml(value: string) {
     .replaceAll(">", "&gt;");
 }
 
-async function downloadBlob(blob: Blob, filename: string, fallbackMimeType = "application/octet-stream") {
+async function downloadBlob(
+  blob: Blob,
+  filename: string,
+  fallbackMimeType = "application/octet-stream",
+  destination: SaveDestination = "downloads"
+) {
   const nativeSaver = window.Capacitor?.Plugins?.DownloadSaver;
   if (window.Capacitor?.getPlatform?.() === "android" && nativeSaver) {
     if (
       nativeSaver.beginFile &&
+      nativeSaver.beginPickedFile &&
       nativeSaver.appendFileChunk &&
       nativeSaver.finishFile &&
       nativeSaver.abortFile
     ) {
-      await downloadBlobInChunks(nativeSaver, blob, filename, fallbackMimeType);
+      await downloadBlobInChunks(nativeSaver, blob, filename, fallbackMimeType, destination);
       return;
     }
 
@@ -1024,10 +1142,12 @@ async function downloadBlobInChunks(
   nativeSaver: NonNullable<NonNullable<Window["Capacitor"]>["Plugins"]>["DownloadSaver"],
   blob: Blob,
   filename: string,
-  fallbackMimeType: string
+  fallbackMimeType: string,
+  destination: SaveDestination
 ) {
   if (
     !nativeSaver?.beginFile ||
+    !nativeSaver.beginPickedFile ||
     !nativeSaver.appendFileChunk ||
     !nativeSaver.finishFile ||
     !nativeSaver.abortFile
@@ -1035,7 +1155,8 @@ async function downloadBlobInChunks(
     throw new Error("Chunked Android saver is unavailable.");
   }
 
-  const session = await nativeSaver.beginFile({
+  const sessionStarter = destination === "ask" ? nativeSaver.beginPickedFile : nativeSaver.beginFile;
+  const session = await sessionStarter({
     filename,
     mimeType: blob.type || fallbackMimeType
   });
@@ -1122,8 +1243,108 @@ function dateStamp() {
   ).padStart(2, "0")}`;
 }
 
+function outputFilename(outputName: string, fallbackStem: string, extension: string) {
+  const cleanExtension = extension.replace(/^\.+/, "") || "bin";
+  const cleaned = sanitizeFilenameStem(outputName);
+  const stem = cleaned || `${fallbackStem}-${dateStamp()}`;
+  return `${stem}.${cleanExtension}`;
+}
+
+function sanitizeFilenameStem(value: string) {
+  return value
+    .replace(/\.[A-Za-z0-9]{1,8}$/u, "")
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, 80);
+}
+
 function isAndroidApp() {
   return window.Capacitor?.getPlatform?.() === "android";
+}
+
+function readRememberSettingsPreference() {
+  try {
+    return localStorage.getItem(rememberSettingsKey) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function saveRememberSettingsPreference(rememberSettings: boolean) {
+  try {
+    localStorage.setItem(rememberSettingsKey, String(rememberSettings));
+  } catch {
+    // Remembering settings is optional.
+  }
+}
+
+function readSavedExportSettings(rememberSettings: boolean): PdfSettings {
+  if (!rememberSettings) {
+    return initialSettings;
+  }
+
+  try {
+    const saved = localStorage.getItem(exportSettingsKey);
+    if (!saved) {
+      return initialSettings;
+    }
+
+    const parsed = JSON.parse(saved) as Partial<PdfSettings>;
+    return normalizeSettings(parsed);
+  } catch {
+    return initialSettings;
+  }
+}
+
+function saveExportSettings(settings: PdfSettings) {
+  try {
+    localStorage.setItem(exportSettingsKey, JSON.stringify(settings));
+  } catch {
+    // Export settings can still be changed for the current session.
+  }
+}
+
+function clearSavedExportSettings() {
+  try {
+    localStorage.removeItem(exportSettingsKey);
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function normalizeSettings(settings: Partial<PdfSettings>): PdfSettings {
+  return {
+    pageSize: settings.pageSize === "a4" || settings.pageSize === "letter" ? settings.pageSize : initialSettings.pageSize,
+    orientation:
+      settings.orientation === "portrait" ||
+      settings.orientation === "landscape" ||
+      settings.orientation === "auto"
+        ? settings.orientation
+        : initialSettings.orientation,
+    fit: settings.fit === "cover" || settings.fit === "contain" ? settings.fit : initialSettings.fit,
+    background:
+      settings.background === "black" || settings.background === "white"
+        ? settings.background
+        : initialSettings.background,
+    stackFormat:
+      settings.stackFormat === "jpeg" || settings.stackFormat === "png"
+        ? settings.stackFormat
+        : initialSettings.stackFormat,
+    quality:
+      typeof settings.quality === "number" && Number.isFinite(settings.quality)
+        ? Math.min(1, Math.max(0.55, settings.quality))
+        : initialSettings.quality,
+    outputName: typeof settings.outputName === "string" ? settings.outputName : initialSettings.outputName,
+    saveDestination:
+      settings.saveDestination === "ask" || settings.saveDestination === "downloads"
+        ? settings.saveDestination
+        : initialSettings.saveDestination,
+    clearAfterExport:
+      typeof settings.clearAfterExport === "boolean"
+        ? settings.clearAfterExport
+        : initialSettings.clearAfterExport
+  };
 }
 
 function readThemeModePreference(): ThemeMode {

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, shell } from "electron";
+import { app, BrowserWindow, dialog, session, shell } from "electron";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { startStackServer } from "../server/stack-server.mjs";
@@ -29,6 +29,21 @@ function configureUpdates() {
   setTimeout(() => {
     checkForUpdates().catch((error) => console.warn("Update check failed:", error));
   }, 2500);
+}
+
+function configureDownloads() {
+  session.defaultSession.on("will-download", (event, item) => {
+    const filePath = dialog.showSaveDialogSync(mainWindow, {
+      defaultPath: join(app.getPath("downloads"), item.getFilename())
+    });
+
+    if (!filePath) {
+      event.preventDefault();
+      return;
+    }
+
+    item.setSavePath(filePath);
+  });
 }
 
 async function checkForUpdates() {
@@ -113,6 +128,7 @@ function compareVersions(a, b) {
 
 app.whenReady().then(() => {
   stackServer = startStackServer();
+  configureDownloads();
   createWindow();
   configureUpdates();
 

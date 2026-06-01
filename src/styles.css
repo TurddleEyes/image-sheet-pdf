@@ -223,18 +223,26 @@ h1 {
 }
 
 select,
-input[type="range"] {
+input[type="range"],
+input[type="checkbox"],
+input[type="text"] {
   width: 100%;
   accent-color: var(--accent);
 }
 
-select {
+select,
+input[type="text"] {
   min-width: 0;
   min-height: 40px;
   border-radius: 8px;
   padding: 0 10px;
+  border: 1px solid var(--border);
   color: var(--text);
   background: var(--surface);
+}
+
+input[type="text"]::placeholder {
+  color: var(--muted);
 }
 
 .controls span,
@@ -251,12 +259,42 @@ select {
   column-gap: 12px;
 }
 
+.filenameControl {
+  grid-column: span 2;
+}
+
 .qualityControl input {
   grid-column: 2;
 }
 
 .qualityControl span {
   grid-column: 3;
+}
+
+.toggleControl {
+  grid-column: span 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.toggleControl input {
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+}
+
+.toggleControl span {
+  min-width: 0;
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 800;
+  line-height: 1.2;
 }
 
 .listbar {
@@ -484,7 +522,8 @@ select {
     font-size: 0.76rem;
   }
 
-  select {
+  select,
+  input[type="text"] {
     min-height: 44px;
     padding: 0 8px;
     font-size: 0.92rem;
@@ -511,5 +550,10 @@ select {
 @media (max-width: 380px) {
   .controls {
     grid-template-columns: 1fr;
+  }
+
+  .filenameControl,
+  .toggleControl {
+    grid-column: 1 / -1;
   }
 }

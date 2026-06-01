@@ -1,19 +1,24 @@
 package com.codex.imagesheetpdf;
 
 import android.Manifest;
+import android.app.Activity;
 import android.content.ContentResolver;
 import android.content.ContentValues;
+import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
 import android.provider.MediaStore;
 import android.util.Base64;
 
+import androidx.activity.result.ActivityResult;
+
 import com.getcapacitor.JSObject;
 import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
@@ -55,6 +60,24 @@ public class DownloadSaverPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void beginPickedFile(PluginCall call) {
+        String filename = call.getString("filename");
+        String mimeType = call.getString("mimeType", "application/octet-stream");
+
+        if (filename == null || filename.trim().isEmpty()) {
+            call.reject("Missing filename.");
+            return;
+        }
+
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType(mimeType);
+        intent.putExtra(Intent.EXTRA_TITLE, filename);
+        intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        startActivityForResult(call, intent, "pickedFileCallback");
+    }
+
+    @PluginMethod
     public void appendFileChunk(PluginCall call) {
         String sessionId = call.getString("sessionId");
         String base64Data = call.getString("base64Data");
@@ -93,7 +116,7 @@ public class DownloadSaverPlugin extends Plugin {
 
         try {
             session.output.close();
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            if (session.markPendingComplete) {
                 ContentValues values = new ContentValues();
                 values.put(MediaStore.Downloads.IS_PENDING, 0);
                 getContext().getContentResolver().update(session.uri, values, null, null);
@@ -115,7 +138,7 @@ public class DownloadSaverPlugin extends Plugin {
         if (session != null) {
             try {
                 session.output.close();
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                if (session.deleteUriOnAbort) {
                     getContext().getContentResolver().delete(session.uri, null, null);
                 } else if (session.file != null && session.file.exists()) {
                     session.file.delete();
@@ -139,6 +162,20 @@ public class DownloadSaverPlugin extends Plugin {
         } else {
             call.reject("Storage permission is required to save to Downloads.");
         }
+    }
+
+    @ActivityCallback
+    private void pickedFileCallback(PluginCall call, ActivityResult result) {
+        if (call == null) {
+            return;
+        }
+
+        if (result.getResultCode() != Activity.RESULT_OK || result.getData() == null || result.getData().getData() == null) {
+            call.reject("File save was cancelled.");
+            return;
+        }
+
+        beginPickedWriteSession(call, result.getData().getData());
     }
 
     private void writeDownload(PluginCall call) {
@@ -253,13 +290,33 @@ public class DownloadSaverPlugin extends Plugin {
             }
 
             String sessionId = UUID.randomUUID().toString();
-            sessions.put(sessionId, new WriteSession(uri, output, outputFile));
+            boolean isMediaStoreDownload = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q;
+            sessions.put(sessionId, new WriteSession(uri, output, outputFile, isMediaStoreDownload, isMediaStoreDownload));
 
             JSObject result = new JSObject();
             result.put("sessionId", sessionId);
             call.resolve(result);
         } catch (Exception error) {
             call.reject("Could not start file save: " + error.getMessage(), error);
+        }
+    }
+
+    private void beginPickedWriteSession(PluginCall call, Uri uri) {
+        try {
+            OutputStream output = getContext().getContentResolver().openOutputStream(uri);
+            if (output == null) {
+                call.reject("Could not open selected file.");
+                return;
+            }
+
+            String sessionId = UUID.randomUUID().toString();
+            sessions.put(sessionId, new WriteSession(uri, output, null, false, false));
+
+            JSObject result = new JSObject();
+            result.put("sessionId", sessionId);
+            call.resolve(result);
+        } catch (Exception error) {
+            call.reject("Could not start selected file save: " + error.getMessage(), error);
         }
     }
 
@@ -290,11 +347,21 @@ public class DownloadSaverPlugin extends Plugin {
         final Uri uri;
         final OutputStream output;
         final File file;
+        final boolean markPendingComplete;
+        final boolean deleteUriOnAbort;
 
-        WriteSession(Uri uri, OutputStream output, File file) {
+        WriteSession(
+            Uri uri,
+            OutputStream output,
+            File file,
+            boolean markPendingComplete,
+            boolean deleteUriOnAbort
+        ) {
             this.uri = uri;
             this.output = output;
             this.file = file;
+            this.markPendingComplete = markPendingComplete;
+            this.deleteUriOnAbort = deleteUriOnAbort;
         }
     }
 }
