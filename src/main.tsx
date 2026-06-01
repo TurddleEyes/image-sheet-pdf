@@ -20,6 +20,7 @@ declare global {
   interface Window {
     Capacitor?: {
       getPlatform?: () => string;
+      convertFileSrc?: (filePath: string) => string;
       Plugins?: {
         DownloadSaver?: {
           saveFile: (options: {
@@ -65,6 +66,14 @@ declare global {
           }) => Promise<{ uri?: string; width: number; height: number; format: string }>;
           abortStack: (options: { sessionId: string }) => Promise<void>;
         };
+        SourceImages?: {
+          pickImages: () => Promise<{ images: NativePickedImage[] }>;
+          deleteImages: (options: { uris: string[] }) => Promise<{
+            requested: number;
+            deleted: number;
+            cancelled?: boolean;
+          }>;
+        };
       };
     };
   }
@@ -77,11 +86,26 @@ type StackFormat = "png" | "jpeg";
 type ThemeMode = "system" | "light" | "dark";
 type SaveDestination = "downloads" | "ask";
 
+type NativePickedImage = {
+  id: string;
+  name: string;
+  mimeType?: string;
+  size?: number;
+  fileUri: string;
+  sourceUri: string;
+};
+
+type PickedFile = {
+  file: File;
+  sourceUri?: string;
+};
+
 type SheetImage = {
   id: string;
   file: File;
   name: string;
   url: string;
+  sourceUri?: string;
   thumbUrl?: string;
   width?: number;
   height?: number;
@@ -98,6 +122,7 @@ type PdfSettings = {
   outputName: string;
   saveDestination: SaveDestination;
   clearAfterExport: boolean;
+  deleteSourcesAfterExport: boolean;
 };
 
 const initialSettings: PdfSettings = {
@@ -109,7 +134,8 @@ const initialSettings: PdfSettings = {
   quality: 0.92,
   outputName: "",
   saveDestination: "downloads",
-  clearAfterExport: false
+  clearAfterExport: true,
+  deleteSourcesAfterExport: false
 };
 
 const pageFormats: Record<PageSize, { portrait: [number, number]; label: string }> = {
@@ -138,6 +164,10 @@ function App() {
 
   const totalSize = useMemo(
     () => images.reduce((sum, image) => sum + image.file.size, 0),
+    [images]
+  );
+  const sourceImageCount = useMemo(
+    () => images.filter((image) => Boolean(image.sourceUri)).length,
     [images]
   );
 
@@ -197,8 +227,50 @@ function App() {
       });
   }, []);
 
+  async function addNativeImages() {
+    const nativeImages = window.Capacitor?.Plugins?.SourceImages;
+    if (!nativeImages) {
+      fileInputRef.current?.click();
+      return;
+    }
+
+    setStatus("Opening photo picker...");
+    try {
+      const result = await nativeImages.pickImages();
+      if (!result.images.length) {
+        setStatus("No image files were selected.");
+        return;
+      }
+
+      setStatus(`Reading ${result.images.length} selected photo${result.images.length === 1 ? "" : "s"}...`);
+      const pickedFiles: PickedFile[] = [];
+      for (const image of result.images) {
+        pickedFiles.push(await nativePickedImageToFile(image));
+      }
+
+      addPickedFiles(pickedFiles);
+    } catch (error) {
+      console.warn(error);
+      void recordAppLog("warn", "Native image picker failed or was cancelled.", error);
+      setStatus("Photo picker was cancelled.");
+    }
+  }
+
+  function chooseImages() {
+    if (isAndroidApp() && window.Capacitor?.Plugins?.SourceImages) {
+      void addNativeImages();
+      return;
+    }
+
+    fileInputRef.current?.click();
+  }
+
   function addFiles(fileList: FileList | File[]) {
-    const files = Array.from(fileList).filter((file) => file.type.startsWith("image/"));
+    addPickedFiles(Array.from(fileList).map((file) => ({ file })));
+  }
+
+  function addPickedFiles(pickedFiles: PickedFile[]) {
+    const files = pickedFiles.filter((picked) => picked.file.type.startsWith("image/"));
     if (!files.length) {
       void recordAppLog("warn", "Image picker returned no supported image files.");
       setStatus("No image files were selected.");
@@ -208,16 +280,17 @@ function App() {
     void recordAppLog(
       "info",
       `Adding ${files.length} image(s): ${files
-        .map((file) => `${file.name} ${file.type || "unknown"} ${file.size} bytes`)
+        .map(({ file }) => `${file.name} ${file.type || "unknown"} ${file.size} bytes`)
         .join("; ")}`
     );
 
-    const nextImages: SheetImage[] = files.map((file) => {
+    const nextImages: SheetImage[] = files.map(({ file, sourceUri }) => {
       const image: SheetImage = {
         id: `${file.name}-${file.lastModified}-${uniqueId()}`,
         file,
         name: file.name,
         url: URL.createObjectURL(file),
+        sourceUri,
         status: "loading"
       };
 
@@ -333,14 +406,55 @@ function App() {
     setImages([]);
   }
 
-  function finishExport(message: string) {
+  async function finishExport(message: string) {
+    let finalMessage = message;
+
+    if (settings.deleteSourcesAfterExport) {
+      finalMessage += await deleteOriginalSourceImages();
+    }
+
     if (settings.clearAfterExport) {
       clearExportedImages();
-      setStatus(`${message} Image list cleared.`);
+      setStatus(`${finalMessage} Image list cleared.`);
       return;
     }
 
-    setStatus(message);
+    setStatus(finalMessage);
+  }
+
+  async function deleteOriginalSourceImages() {
+    const nativeImages = window.Capacitor?.Plugins?.SourceImages;
+    const sourceUris = images
+      .map((image) => image.sourceUri)
+      .filter((uri): uri is string => Boolean(uri));
+
+    if (!isAndroidApp() || !nativeImages || !sourceUris.length) {
+      return " No original phone photos were available to delete.";
+    }
+
+    const shouldDelete = window.confirm(
+      `Delete ${sourceUris.length} original phone photo${sourceUris.length === 1 ? "" : "s"} now? This cannot be undone. Android may ask you to approve it next.`
+    );
+    if (!shouldDelete) {
+      void recordAppLog("info", "User kept original source photos after export.");
+      return " Original phone photos kept.";
+    }
+
+    try {
+      const result = await nativeImages.deleteImages({ uris: sourceUris });
+      if (result.cancelled) {
+        return " Original phone photos kept.";
+      }
+
+      void recordAppLog(
+        "info",
+        `Original source delete complete. deleted=${result.deleted} requested=${result.requested}`
+      );
+      return ` Deleted ${result.deleted} original phone photo${result.deleted === 1 ? "" : "s"}.`;
+    } catch (error) {
+      void recordAppLog("error", "Original source delete failed.", error);
+      return " Original phone photo deletion failed.";
+    }
   }
 
   function pageDimensions(image?: SheetImage): { width: number; height: number; orientation: "p" | "l" } {
@@ -407,7 +521,7 @@ function App() {
         "application/pdf",
         settings.saveDestination
       );
-      finishExport(`Exported ${images.length} page${images.length === 1 ? "" : "s"} as a PDF.`);
+      await finishExport(`Exported ${images.length} page${images.length === 1 ? "" : "s"} as a PDF.`);
       void recordAppLog("info", "PDF export complete.");
     } catch (error) {
       console.error(error);
@@ -435,7 +549,7 @@ function App() {
           settings.stackFormat === "jpeg"
             ? " Android used PNG because this stack may be taller than normal JPEG supports."
             : "";
-        finishExport(
+        await finishExport(
           `Exported a ${result.width} x ${result.height} stacked ${result.format.toUpperCase()}.${pngNote}`
         );
         void recordAppLog(
@@ -448,7 +562,7 @@ function App() {
       if (!isAndroidApp()) {
         try {
           const result = await exportStackedRaster();
-          finishExport(
+          await finishExport(
             `Exported a ${result.width} x ${result.height} stacked ${result.format.toUpperCase()}.`
           );
           void recordAppLog("info", `Stack raster export complete. ${result.width}x${result.height}`);
@@ -501,7 +615,7 @@ function App() {
         "image/png",
         settings.saveDestination
       );
-      finishExport(`Exported a ${width} x ${height} stacked PNG.`);
+      await finishExport(`Exported a ${width} x ${height} stacked PNG.`);
       void recordAppLog("info", `Stack browser export complete. ${width}x${height}`);
     } catch (error) {
       console.error(error);
@@ -550,7 +664,7 @@ function App() {
       "image/svg+xml",
       settings.saveDestination
     );
-    finishExport(`Canvas limit avoided: exported a ${width} x ${height} stacked SVG.`);
+    await finishExport(`Canvas limit avoided: exported a ${width} x ${height} stacked SVG.`);
     void recordAppLog("info", `Stack SVG export complete. ${width}x${height}`);
   }
 
@@ -727,7 +841,7 @@ function App() {
             multiple
             onChange={handlePickerChange}
           />
-          <button type="button" onClick={() => fileInputRef.current?.click()} title="Add images">
+          <button type="button" onClick={chooseImages} title="Add images">
             <ImagePlus size={20} aria-hidden="true" />
             Add images
           </button>
@@ -873,8 +987,30 @@ function App() {
                 }))
               }
             />
-            <span>Clear list after export</span>
+            <span>Clear app list after export</span>
           </label>
+          {isAndroidApp() ? (
+            <label
+              className="toggleControl dangerToggle"
+              title={
+                sourceImageCount
+                  ? "Delete the original phone photos after a successful export"
+                  : "Use Add images in the Android app to select deletable source photos"
+              }
+            >
+              <input
+                type="checkbox"
+                checked={settings.deleteSourcesAfterExport}
+                onChange={(event) =>
+                  setSettings((current) => ({
+                    ...current,
+                    deleteSourcesAfterExport: event.target.checked
+                  }))
+                }
+              />
+              <span>Delete phone originals after export</span>
+            </label>
+          ) : null}
           <label className="toggleControl">
             <input
               type="checkbox"
@@ -1009,6 +1145,25 @@ async function createThumbnail(file: File) {
   } finally {
     URL.revokeObjectURL(url);
   }
+}
+
+async function nativePickedImageToFile(image: NativePickedImage): Promise<PickedFile> {
+  const fileUrl = window.Capacitor?.convertFileSrc?.(image.fileUri) ?? image.fileUri;
+  const response = await fetch(fileUrl);
+  if (!response.ok) {
+    throw new Error(`Could not read selected photo: ${image.name}`);
+  }
+
+  const blob = await response.blob();
+  const file = new File([blob], image.name, {
+    type: image.mimeType || blob.type || "image/jpeg",
+    lastModified: Date.now()
+  });
+
+  return {
+    file,
+    sourceUri: image.sourceUri
+  };
 }
 
 async function bitmapToThumbnail(source: ImageBitmap, width: number, height: number) {
@@ -1343,7 +1498,11 @@ function normalizeSettings(settings: Partial<PdfSettings>): PdfSettings {
     clearAfterExport:
       typeof settings.clearAfterExport === "boolean"
         ? settings.clearAfterExport
-        : initialSettings.clearAfterExport
+        : initialSettings.clearAfterExport,
+    deleteSourcesAfterExport:
+      typeof settings.deleteSourcesAfterExport === "boolean"
+        ? settings.deleteSourcesAfterExport
+        : initialSettings.deleteSourcesAfterExport
   };
 }
 

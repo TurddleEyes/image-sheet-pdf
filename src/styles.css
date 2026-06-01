@@ -297,6 +297,14 @@ input[type="text"]::placeholder {
   line-height: 1.2;
 }
 
+.dangerToggle {
+  border-color: color-mix(in srgb, #c65151 52%, var(--border));
+}
+
+.dangerToggle span {
+  color: color-mix(in srgb, #c65151 74%, var(--text));
+}
+
 .listbar {
   margin-bottom: 12px;
 }
