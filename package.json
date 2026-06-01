@@ -1,6 +1,6 @@
 {
   "name": "image-sheet-pdf",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Arrange images, export one-page PDFs, and stack ordered images into tall PNG or JPEG files.",
   "author": "Codex",
   "private": false,
@@ -17,7 +17,8 @@
     "publish:win": "npm run build && electron-builder --win nsis --publish always",
     "android:init": "npm run build && cap add android",
     "android:sync": "npm run build && cap sync android",
-    "android:apk": "npm run android:sync && cd android && .\\gradlew.bat assembleDebug"
+    "android:apk": "npm run android:sync && cd android && .\\gradlew.bat assembleDebug",
+    "android:release-apk": "npm run android:sync && cd android && .\\gradlew.bat assembleRelease"
   },
   "dependencies": {
     "@capacitor/core": "^8.3.4",

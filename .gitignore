@@ -5,4 +5,5 @@ android-cmdline-tools-temp/
 commandlinetools-win-latest.zip
 .env
 *.log
-
+*.jks
+*.keystore

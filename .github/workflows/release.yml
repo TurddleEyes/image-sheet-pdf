@@ -34,15 +34,35 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Restore Android signing key
+        shell: pwsh
+        run: |
+          [IO.File]::WriteAllBytes(
+            "android/app/release-keystore.jks",
+            [Convert]::FromBase64String("${{ secrets.ANDROID_KEYSTORE_BASE64 }}")
+          )
+
       - name: Build Android APK
-        run: npm run android:apk
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ github.workspace }}\android\app\release-keystore.jks
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: npm run android:release-apk
 
       - name: Build Windows app
         run: npm run dist:win
+
+      - name: Prepare release artifacts
+        shell: pwsh
+        run: |
+          Copy-Item `
+            android/app/build/outputs/apk/release/app-release.apk `
+            "dist/Image-Sheet-PDF-Android-${{ github.ref_name }}.apk"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/Image-Sheet-PDF-Setup-*.exe
-            android/app/build/outputs/apk/debug/app-debug.apk
+            dist/Image-Sheet-PDF-Android-*.apk
