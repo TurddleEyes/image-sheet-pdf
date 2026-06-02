@@ -97,6 +97,7 @@ type FitMode = "contain" | "cover";
 type StackFormat = "png" | "jpeg";
 type ThemeMode = "system" | "light" | "dark";
 type SaveDestination = "downloads" | "ask";
+type SourceCleanupMode = "off" | "images" | "images-and-folder";
 
 type NativePickedImage = {
   id: string;
@@ -140,7 +141,8 @@ type PdfSettings = {
   outputName: string;
   saveDestination: SaveDestination;
   clearAfterExport: boolean;
-  deleteSourcesAfterExport: boolean;
+  sourceCleanupMode: SourceCleanupMode;
+  deleteSourcesAfterExport?: boolean;
 };
 
 const initialSettings: PdfSettings = {
@@ -153,7 +155,7 @@ const initialSettings: PdfSettings = {
   outputName: "",
   saveDestination: "downloads",
   clearAfterExport: true,
-  deleteSourcesAfterExport: false
+  sourceCleanupMode: "off"
 };
 
 const pageFormats: Record<PageSize, { portrait: [number, number]; label: string }> = {
@@ -464,7 +466,7 @@ function App() {
   async function finishExport(message: string) {
     let finalMessage = message;
 
-    if (settings.deleteSourcesAfterExport) {
+    if (settings.sourceCleanupMode !== "off") {
       finalMessage += await deleteOriginalSourceImages();
     }
 
@@ -479,6 +481,7 @@ function App() {
 
   async function deleteOriginalSourceImages() {
     const nativeImages = window.Capacitor?.Plugins?.SourceImages;
+    const deleteBatchFolders = settings.sourceCleanupMode === "images-and-folder";
     const batchFolderUris = uniqueStrings(
       images
         .map((image) => image.batchFolderUri)
@@ -491,33 +494,39 @@ function App() {
     );
     const sourceUris = uniqueStrings(
       images
-        .filter((image) => !image.batchFolderUri)
+        .filter((image) => !deleteBatchFolders || !image.batchFolderUri)
         .map((image) => image.sourceUri)
         .filter((uri): uri is string => Boolean(uri))
     );
-    const totalDeleteTargets = sourceUris.length + batchFolderUris.length;
+    const folderUrisToDelete = deleteBatchFolders ? batchFolderUris : [];
+    const totalDeleteTargets = sourceUris.length + folderUrisToDelete.length;
 
     if (!isAndroidApp() || !nativeImages || !totalDeleteTargets) {
       return " No original phone photos were available to delete.";
     }
 
-    if (batchFolderUris.length && !nativeImages.deleteFolders) {
+    if (folderUrisToDelete.length && !nativeImages.deleteFolders) {
       return " Batch folder deletion is not available in this Android build.";
     }
 
-    const targetDescription = batchFolderUris.length
-      ? `${batchFolderUris.length} selected batch folder${batchFolderUris.length === 1 ? "" : "s"}${
-          sourceUris.length
-            ? ` and ${sourceUris.length} original phone photo${sourceUris.length === 1 ? "" : "s"}`
-            : ""
-        }`
+    const targetDescription = folderUrisToDelete.length
+      ? `${sourceUris.length ? `${sourceUris.length} original phone photo${sourceUris.length === 1 ? "" : "s"} and ` : ""}${
+          folderUrisToDelete.length
+        } selected batch folder${folderUrisToDelete.length === 1 ? "" : "s"}`
       : `${sourceUris.length} original phone photo${sourceUris.length === 1 ? "" : "s"}`;
-    const folderNameLine = batchFolderNames.length
+    const deleteDescription = folderUrisToDelete.length
+      ? `This deletes ${
+          sourceUris.length
+            ? "the selected original photos and "
+            : ""
+        }the selected batch folder and everything inside it.`
+      : "This deletes the original selected image files, but keeps any batch folder itself.";
+    const folderNameLine = folderUrisToDelete.length && batchFolderNames.length
       ? `\n\nFolder${batchFolderNames.length === 1 ? "" : "s"}: ${batchFolderNames.join(", ")}`
       : "";
 
     const shouldDelete = window.confirm(
-      `Delete ${targetDescription} now? This deletes the selected batch folder and everything inside it. This cannot be undone.${folderNameLine}`
+      `Delete ${targetDescription} now? ${deleteDescription} This cannot be undone.${folderNameLine}`
     );
     if (!shouldDelete) {
       void recordAppLog("info", "User kept original source photos and folders after export.");
@@ -529,8 +538,8 @@ function App() {
       let deletedFolders = 0;
       let keptMessage = "";
 
-      if (batchFolderUris.length && nativeImages.deleteFolders) {
-        const folderResult = await nativeImages.deleteFolders({ uris: batchFolderUris });
+      if (folderUrisToDelete.length && nativeImages.deleteFolders) {
+        const folderResult = await nativeImages.deleteFolders({ uris: folderUrisToDelete });
         deletedFolders = folderResult.deleted;
         void recordAppLog(
           "info",
@@ -554,7 +563,7 @@ function App() {
       const imageMessage = sourceUris.length
         ? ` Deleted ${deletedImages} original phone photo${deletedImages === 1 ? "" : "s"}.`
         : "";
-      const folderMessage = batchFolderUris.length
+      const folderMessage = folderUrisToDelete.length
         ? ` Deleted ${deletedFolders} selected batch folder${deletedFolders === 1 ? "" : "s"}.`
         : "";
       return `${imageMessage}${folderMessage}${keptMessage}`;
@@ -1104,24 +1113,26 @@ function App() {
           </label>
           {isAndroidApp() ? (
             <label
-              className="toggleControl dangerToggle"
               title={
                 sourceImageCount
-                  ? "Delete original phone photos or selected batch folders after a successful export"
+                  ? "Choose what original phone files to delete after a successful export"
                   : "Use Add images in the Android app to select deletable source photos"
               }
             >
-              <input
-                type="checkbox"
-                checked={settings.deleteSourcesAfterExport}
+              Source cleanup
+              <select
+                value={settings.sourceCleanupMode}
                 onChange={(event) =>
                   setSettings((current) => ({
                     ...current,
-                    deleteSourcesAfterExport: event.target.checked
+                    sourceCleanupMode: event.target.value as SourceCleanupMode
                   }))
                 }
-              />
-              <span>Delete originals or batch folder after export</span>
+              >
+                <option value="off">Keep originals</option>
+                <option value="images">Delete original images</option>
+                <option value="images-and-folder">Delete images and batch folder</option>
+              </select>
             </label>
           ) : null}
           <label className="toggleControl">
@@ -1618,11 +1629,20 @@ function normalizeSettings(settings: Partial<PdfSettings>): PdfSettings {
       typeof settings.clearAfterExport === "boolean"
         ? settings.clearAfterExport
         : initialSettings.clearAfterExport,
-    deleteSourcesAfterExport:
-      typeof settings.deleteSourcesAfterExport === "boolean"
-        ? settings.deleteSourcesAfterExport
-        : initialSettings.deleteSourcesAfterExport
+    sourceCleanupMode: normalizeSourceCleanupMode(settings)
   };
+}
+
+function normalizeSourceCleanupMode(settings: Partial<PdfSettings>): SourceCleanupMode {
+  if (
+    settings.sourceCleanupMode === "off" ||
+    settings.sourceCleanupMode === "images" ||
+    settings.sourceCleanupMode === "images-and-folder"
+  ) {
+    return settings.sourceCleanupMode;
+  }
+
+  return settings.deleteSourcesAfterExport ? "images-and-folder" : initialSettings.sourceCleanupMode;
 }
 
 function readThemeModePreference(): ThemeMode {
