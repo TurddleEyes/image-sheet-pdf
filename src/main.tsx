@@ -285,24 +285,49 @@ function App() {
 
     setStatus("Opening folder picker...");
     try {
-      const result = await nativeImages.pickFolderBatch();
-      if (!result.images.length) {
-        setStatus("No image files were found in that folder.");
-        return;
-      }
-
       setSettings((current) => ({ ...current, saveDestination: "ask" }));
-      setStatus(`Reading ${result.images.length} image${result.images.length === 1 ? "" : "s"} from folder...`);
       const pickedFiles: PickedFile[] = [];
-      for (const image of result.images) {
-        pickedFiles.push(await nativePickedImageToFile(image));
+      const folderNames: string[] = [];
+      let folderCount = 0;
+      let keepAddingFolders = true;
+
+      while (keepAddingFolders) {
+        const result = await nativeImages.pickFolderBatch();
+        if (!result.images.length) {
+          if (!pickedFiles.length) {
+            setStatus("No image files were found in that folder.");
+            return;
+          }
+          break;
+        }
+
+        folderCount += 1;
+        if (result.folderName) {
+          folderNames.push(result.folderName);
+        }
+
+        setStatus(
+          `Reading ${result.images.length} image${result.images.length === 1 ? "" : "s"} from ${
+            result.folderName || "folder"
+          }...`
+        );
+        for (const image of result.images) {
+          pickedFiles.push(await nativePickedImageToFile(image));
+        }
+
+        keepAddingFolders = window.confirm("Add another folder batch?");
+        if (keepAddingFolders) {
+          setStatus("Opening folder picker...");
+        }
       }
 
       addPickedFiles(pickedFiles);
+      const folderLabel =
+        folderCount === 1
+          ? folderNames[0] || "1 folder"
+          : `${folderCount} folders${folderNames.length ? ` (${folderNames.join(", ")})` : ""}`;
       setStatus(
-        `Added ${result.images.length} image${result.images.length === 1 ? "" : "s"} from ${
-          result.folderName || "folder batch"
-        }. Save location will be asked during export.`
+        `Added ${pickedFiles.length} image${pickedFiles.length === 1 ? "" : "s"} from ${folderLabel}. Save location will be asked during export.`
       );
     } catch (error) {
       console.warn(error);
@@ -962,9 +987,9 @@ function App() {
             Add images
           </button>
           {isAndroidApp() ? (
-            <button type="button" onClick={addNativeFolderBatch} title="Add a folder batch">
+            <button type="button" onClick={addNativeFolderBatch} title="Add folder batches">
               <FolderOpen size={20} aria-hidden="true" />
-              Add folder batch
+              Add folder batches
             </button>
           ) : null}
           <p>{isAndroidApp() ? "Add photos from your phone." : "Drop files here, or add them from your computer."}</p>
