@@ -6,6 +6,7 @@ import {
   Download,
   FileImage,
   FileText,
+  FolderOpen,
   GripVertical,
   ImagePlus,
   Layers,
@@ -68,12 +69,21 @@ declare global {
         };
         SourceImages?: {
           pickImages: () => Promise<{ images: NativePickedImage[] }>;
+          pickFolderBatch?: () => Promise<{
+            images: NativePickedImage[];
+            folderUri?: string;
+            folderName?: string;
+          }>;
           deleteImages: (options: { uris: string[] }) => Promise<{
             requested: number;
             deleted: number;
             foldersDeleted?: number;
             foldersEmpty?: number;
             cancelled?: boolean;
+          }>;
+          deleteFolders?: (options: { uris: string[] }) => Promise<{
+            requested: number;
+            deleted: number;
           }>;
         };
       };
@@ -95,11 +105,15 @@ type NativePickedImage = {
   size?: number;
   fileUri: string;
   sourceUri: string;
+  batchFolderUri?: string;
+  batchFolderName?: string;
 };
 
 type PickedFile = {
   file: File;
   sourceUri?: string;
+  batchFolderUri?: string;
+  batchFolderName?: string;
 };
 
 type SheetImage = {
@@ -108,6 +122,8 @@ type SheetImage = {
   name: string;
   url: string;
   sourceUri?: string;
+  batchFolderUri?: string;
+  batchFolderName?: string;
   thumbUrl?: string;
   width?: number;
   height?: number;
@@ -258,6 +274,41 @@ function App() {
     }
   }
 
+  async function addNativeFolderBatch() {
+    const nativeImages = window.Capacitor?.Plugins?.SourceImages;
+    if (!isAndroidApp() || !nativeImages?.pickFolderBatch) {
+      setStatus("Folder batches are available in the Android app.");
+      return;
+    }
+
+    setStatus("Opening folder picker...");
+    try {
+      const result = await nativeImages.pickFolderBatch();
+      if (!result.images.length) {
+        setStatus("No image files were found in that folder.");
+        return;
+      }
+
+      setSettings((current) => ({ ...current, saveDestination: "ask" }));
+      setStatus(`Reading ${result.images.length} image${result.images.length === 1 ? "" : "s"} from folder...`);
+      const pickedFiles: PickedFile[] = [];
+      for (const image of result.images) {
+        pickedFiles.push(await nativePickedImageToFile(image));
+      }
+
+      addPickedFiles(pickedFiles);
+      setStatus(
+        `Added ${result.images.length} image${result.images.length === 1 ? "" : "s"} from ${
+          result.folderName || "folder batch"
+        }. Save location will be asked during export.`
+      );
+    } catch (error) {
+      console.warn(error);
+      void recordAppLog("warn", "Native folder batch picker failed or was cancelled.", error);
+      setStatus("Folder picker was cancelled.");
+    }
+  }
+
   function chooseImages() {
     if (isAndroidApp() && window.Capacitor?.Plugins?.SourceImages) {
       void addNativeImages();
@@ -286,13 +337,15 @@ function App() {
         .join("; ")}`
     );
 
-    const nextImages: SheetImage[] = files.map(({ file, sourceUri }) => {
+    const nextImages: SheetImage[] = files.map(({ file, sourceUri, batchFolderUri, batchFolderName }) => {
       const image: SheetImage = {
         id: `${file.name}-${file.lastModified}-${uniqueId()}`,
         file,
         name: file.name,
         url: URL.createObjectURL(file),
         sourceUri,
+        batchFolderUri,
+        batchFolderName,
         status: "loading"
       };
 
@@ -426,42 +479,88 @@ function App() {
 
   async function deleteOriginalSourceImages() {
     const nativeImages = window.Capacitor?.Plugins?.SourceImages;
-    const sourceUris = images
-      .map((image) => image.sourceUri)
-      .filter((uri): uri is string => Boolean(uri));
+    const batchFolderUris = uniqueStrings(
+      images
+        .map((image) => image.batchFolderUri)
+        .filter((uri): uri is string => Boolean(uri))
+    );
+    const batchFolderNames = uniqueStrings(
+      images
+        .map((image) => image.batchFolderName)
+        .filter((name): name is string => Boolean(name))
+    );
+    const sourceUris = uniqueStrings(
+      images
+        .filter((image) => !image.batchFolderUri)
+        .map((image) => image.sourceUri)
+        .filter((uri): uri is string => Boolean(uri))
+    );
+    const totalDeleteTargets = sourceUris.length + batchFolderUris.length;
 
-    if (!isAndroidApp() || !nativeImages || !sourceUris.length) {
+    if (!isAndroidApp() || !nativeImages || !totalDeleteTargets) {
       return " No original phone photos were available to delete.";
     }
 
+    if (batchFolderUris.length && !nativeImages.deleteFolders) {
+      return " Batch folder deletion is not available in this Android build.";
+    }
+
+    const targetDescription = batchFolderUris.length
+      ? `${batchFolderUris.length} selected batch folder${batchFolderUris.length === 1 ? "" : "s"}${
+          sourceUris.length
+            ? ` and ${sourceUris.length} original phone photo${sourceUris.length === 1 ? "" : "s"}`
+            : ""
+        }`
+      : `${sourceUris.length} original phone photo${sourceUris.length === 1 ? "" : "s"}`;
+    const folderNameLine = batchFolderNames.length
+      ? `\n\nFolder${batchFolderNames.length === 1 ? "" : "s"}: ${batchFolderNames.join(", ")}`
+      : "";
+
     const shouldDelete = window.confirm(
-      `Delete ${sourceUris.length} original phone photo${sourceUris.length === 1 ? "" : "s"} now? If a source folder becomes empty, the app will try to remove that folder too. This cannot be undone. Android may ask you to approve it next.`
+      `Delete ${targetDescription} now? This deletes the selected batch folder and everything inside it. This cannot be undone.${folderNameLine}`
     );
     if (!shouldDelete) {
-      void recordAppLog("info", "User kept original source photos after export.");
-      return " Original phone photos kept.";
+      void recordAppLog("info", "User kept original source photos and folders after export.");
+      return " Original phone photos and folders kept.";
     }
 
     try {
-      const result = await nativeImages.deleteImages({ uris: sourceUris });
-      if (result.cancelled) {
-        return " Original phone photos kept.";
+      let deletedImages = 0;
+      let deletedFolders = 0;
+      let keptMessage = "";
+
+      if (batchFolderUris.length && nativeImages.deleteFolders) {
+        const folderResult = await nativeImages.deleteFolders({ uris: batchFolderUris });
+        deletedFolders = folderResult.deleted;
+        void recordAppLog(
+          "info",
+          `Batch folder delete complete. deleted=${folderResult.deleted} requested=${folderResult.requested}`
+        );
       }
 
-      void recordAppLog(
-        "info",
-        `Original source delete complete. deleted=${result.deleted} requested=${result.requested} foldersDeleted=${result.foldersDeleted ?? 0} foldersEmpty=${result.foldersEmpty ?? 0}`
-      );
-      const folderMessage =
-        result.foldersDeleted && result.foldersDeleted > 0
-          ? ` Deleted ${result.foldersDeleted} empty source folder${result.foldersDeleted === 1 ? "" : "s"}.`
-          : result.foldersEmpty && result.foldersEmpty > 0
-            ? " Source folder was empty, but Android did not allow removing it."
-            : "";
-      return ` Deleted ${result.deleted} original phone photo${result.deleted === 1 ? "" : "s"}.${folderMessage}`;
+      if (sourceUris.length) {
+        const result = await nativeImages.deleteImages({ uris: sourceUris });
+        if (result.cancelled) {
+          keptMessage = " Some original phone photos were kept.";
+        } else {
+          deletedImages = result.deleted;
+          void recordAppLog(
+            "info",
+            `Original source delete complete. deleted=${result.deleted} requested=${result.requested} foldersDeleted=${result.foldersDeleted ?? 0} foldersEmpty=${result.foldersEmpty ?? 0}`
+          );
+        }
+      }
+
+      const imageMessage = sourceUris.length
+        ? ` Deleted ${deletedImages} original phone photo${deletedImages === 1 ? "" : "s"}.`
+        : "";
+      const folderMessage = batchFolderUris.length
+        ? ` Deleted ${deletedFolders} selected batch folder${deletedFolders === 1 ? "" : "s"}.`
+        : "";
+      return `${imageMessage}${folderMessage}${keptMessage}`;
     } catch (error) {
-      void recordAppLog("error", "Original source delete failed.", error);
-      return " Original phone photo deletion failed.";
+      void recordAppLog("error", "Original source or batch folder delete failed.", error);
+      return " Original phone photo or batch folder deletion failed.";
     }
   }
 
@@ -853,6 +952,12 @@ function App() {
             <ImagePlus size={20} aria-hidden="true" />
             Add images
           </button>
+          {isAndroidApp() ? (
+            <button type="button" onClick={addNativeFolderBatch} title="Add a folder batch">
+              <FolderOpen size={20} aria-hidden="true" />
+              Add folder batch
+            </button>
+          ) : null}
           <p>{isAndroidApp() ? "Add photos from your phone." : "Drop files here, or add them from your computer."}</p>
         </section>
 
@@ -1002,7 +1107,7 @@ function App() {
               className="toggleControl dangerToggle"
               title={
                 sourceImageCount
-                  ? "Delete the original phone photos after a successful export"
+                  ? "Delete original phone photos or selected batch folders after a successful export"
                   : "Use Add images in the Android app to select deletable source photos"
               }
             >
@@ -1016,7 +1121,7 @@ function App() {
                   }))
                 }
               />
-              <span>Delete phone originals after export</span>
+              <span>Delete originals or batch folder after export</span>
             </label>
           ) : null}
           <label className="toggleControl">
@@ -1170,7 +1275,9 @@ async function nativePickedImageToFile(image: NativePickedImage): Promise<Picked
 
   return {
     file,
-    sourceUri: image.sourceUri
+    sourceUri: image.sourceUri,
+    batchFolderUri: image.batchFolderUri,
+    batchFolderName: image.batchFolderName
   };
 }
 
@@ -1420,6 +1527,10 @@ function sanitizeFilenameStem(value: string) {
     .replace(/\s+/gu, " ")
     .trim()
     .slice(0, 80);
+}
+
+function uniqueStrings(values: string[]) {
+  return Array.from(new Set(values));
 }
 
 function isAndroidApp() {

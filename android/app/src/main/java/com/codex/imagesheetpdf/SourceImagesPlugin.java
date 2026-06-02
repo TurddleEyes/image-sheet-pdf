@@ -29,6 +29,7 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.UUID;
 
@@ -48,6 +49,15 @@ public class SourceImagesPlugin extends Plugin {
         intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
         intent.addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         startActivityForResult(call, intent, "pickImagesCallback");
+    }
+
+    @PluginMethod
+    public void pickFolderBatch(PluginCall call) {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        intent.addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        startActivityForResult(call, intent, "pickFolderBatchCallback");
     }
 
     @PluginMethod
@@ -114,6 +124,39 @@ public class SourceImagesPlugin extends Plugin {
         resolveDelete(call, sourceUris.size(), deleted, false, folders);
     }
 
+    @PluginMethod
+    public void deleteFolders(PluginCall call) {
+        JSArray input = call.getArray("uris");
+        if (input == null || input.length() == 0) {
+            resolveFolderDelete(call, 0, 0);
+            return;
+        }
+
+        int requested = 0;
+        int deleted = 0;
+        ContentResolver resolver = getContext().getContentResolver();
+        for (int index = 0; index < input.length(); index += 1) {
+            String value = input.optString(index, "");
+            if (value.isEmpty()) {
+                continue;
+            }
+
+            requested += 1;
+            try {
+                Uri treeUri = Uri.parse(value);
+                String documentId = DocumentsContract.getTreeDocumentId(treeUri);
+                Uri documentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId);
+                if (DocumentsContract.deleteDocument(resolver, documentUri)) {
+                    deleted += 1;
+                }
+            } catch (Exception ignored) {
+                // Keep going so one protected folder does not block the rest.
+            }
+        }
+
+        resolveFolderDelete(call, requested, deleted);
+    }
+
     @ActivityCallback
     private void pickImagesCallback(PluginCall call, ActivityResult result) {
         if (call == null) {
@@ -153,6 +196,47 @@ public class SourceImagesPlugin extends Plugin {
         }
     }
 
+    @ActivityCallback
+    private void pickFolderBatchCallback(PluginCall call, ActivityResult result) {
+        if (call == null) {
+            return;
+        }
+
+        if (result.getResultCode() != Activity.RESULT_OK || result.getData() == null) {
+            JSObject output = new JSObject();
+            output.put("images", new JSArray());
+            call.resolve(output);
+            return;
+        }
+
+        try {
+            Intent data = result.getData();
+            Uri treeUri = data.getData();
+            if (treeUri == null) {
+                JSObject output = new JSObject();
+                output.put("images", new JSArray());
+                call.resolve(output);
+                return;
+            }
+
+            persistTreePermission(data, treeUri);
+            String folderUri = treeUri.toString();
+            String rootDocumentId = DocumentsContract.getTreeDocumentId(treeUri);
+            Uri rootDocumentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, rootDocumentId);
+            String folderName = displayName(rootDocumentUri);
+            JSArray images = new JSArray();
+            collectFolderImages(treeUri, rootDocumentId, folderUri, folderName, images);
+
+            JSObject output = new JSObject();
+            output.put("images", images);
+            output.put("folderUri", folderUri);
+            output.put("folderName", folderName);
+            call.resolve(output);
+        } catch (Exception error) {
+            call.reject("Could not read selected folder: " + error.getMessage(), error);
+        }
+    }
+
     @Override
     protected void handleOnActivityResult(int requestCode, int resultCode, Intent data) {
         if (requestCode != DELETE_REQUEST_CODE) {
@@ -175,6 +259,23 @@ public class SourceImagesPlugin extends Plugin {
         ContentResolver resolver = getContext().getContentResolver();
         String name = displayName(sourceUri);
         String mimeType = resolver.getType(sourceUri);
+        return copyImageForWeb(sourceUri, name, mimeType, null, null);
+    }
+
+    private JSObject copyImageForWeb(
+        Uri sourceUri,
+        String sourceName,
+        String sourceMimeType,
+        String batchFolderUri,
+        String batchFolderName
+    ) throws Exception {
+        ContentResolver resolver = getContext().getContentResolver();
+        String name = sourceName == null || sourceName.trim().isEmpty()
+            ? "image-" + UUID.randomUUID() + ".jpg"
+            : sourceName;
+        String mimeType = sourceMimeType == null || sourceMimeType.trim().isEmpty()
+            ? resolver.getType(sourceUri)
+            : sourceMimeType;
         File directory = new File(getContext().getCacheDir(), "source-images");
         if (!directory.exists() && !directory.mkdirs()) {
             throw new IllegalStateException("Could not create source image cache.");
@@ -203,7 +304,60 @@ public class SourceImagesPlugin extends Plugin {
         image.put("size", outputFile.length());
         image.put("fileUri", Uri.fromFile(outputFile).toString());
         image.put("sourceUri", sourceUri.toString());
+        if (batchFolderUri != null) {
+            image.put("batchFolderUri", batchFolderUri);
+        }
+        if (batchFolderName != null) {
+            image.put("batchFolderName", batchFolderName);
+        }
         return image;
+    }
+
+    private void collectFolderImages(
+        Uri treeUri,
+        String documentId,
+        String batchFolderUri,
+        String batchFolderName,
+        JSArray images
+    ) throws Exception {
+        ContentResolver resolver = getContext().getContentResolver();
+        Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, documentId);
+        String[] projection = {
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE
+        };
+        ArrayList<FolderDocument> documents = new ArrayList<>();
+
+        try (Cursor cursor = resolver.query(childrenUri, projection, null, null, null)) {
+            if (cursor == null) {
+                return;
+            }
+
+            while (cursor.moveToNext()) {
+                String childDocumentId = cursorString(cursor, DocumentsContract.Document.COLUMN_DOCUMENT_ID);
+                String name = cursorString(cursor, DocumentsContract.Document.COLUMN_DISPLAY_NAME);
+                String mimeType = cursorString(cursor, DocumentsContract.Document.COLUMN_MIME_TYPE);
+                if (childDocumentId != null && !childDocumentId.isEmpty()) {
+                    documents.add(new FolderDocument(childDocumentId, name, mimeType));
+                }
+            }
+        }
+
+        Collections.sort(documents, (left, right) -> left.name.compareToIgnoreCase(right.name));
+        for (FolderDocument document : documents) {
+            if (DocumentsContract.Document.MIME_TYPE_DIR.equals(document.mimeType)) {
+                collectFolderImages(treeUri, document.documentId, batchFolderUri, batchFolderName, images);
+                continue;
+            }
+
+            if (document.mimeType == null || !document.mimeType.startsWith("image/")) {
+                continue;
+            }
+
+            Uri imageUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, document.documentId);
+            images.put(copyImageForWeb(imageUri, document.name, document.mimeType, batchFolderUri, batchFolderName));
+        }
     }
 
     private void persistUriPermission(Intent data, Uri uri) {
@@ -214,6 +368,19 @@ public class SourceImagesPlugin extends Plugin {
 
         try {
             getContext().getContentResolver().takePersistableUriPermission(uri, flags);
+        } catch (Exception ignored) {
+            // Some providers do not offer persistable permissions.
+        }
+    }
+
+    private void persistTreePermission(Intent data, Uri treeUri) {
+        int flags = data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        if (flags == 0) {
+            return;
+        }
+
+        try {
+            getContext().getContentResolver().takePersistableUriPermission(treeUri, flags);
         } catch (Exception ignored) {
             // Some providers do not offer persistable permissions.
         }
@@ -494,6 +661,13 @@ public class SourceImagesPlugin extends Plugin {
         call.resolve(output);
     }
 
+    private void resolveFolderDelete(PluginCall call, int requested, int deleted) {
+        JSObject output = new JSObject();
+        output.put("requested", requested);
+        output.put("deleted", deleted);
+        call.resolve(output);
+    }
+
     private File uniqueFile(File directory, String filename) {
         File candidate = new File(directory, filename);
         if (!candidate.exists()) {
@@ -523,6 +697,18 @@ public class SourceImagesPlugin extends Plugin {
             return "image-" + UUID.randomUUID() + ".jpg";
         }
         return cleaned;
+    }
+
+    private static class FolderDocument {
+        final String documentId;
+        final String name;
+        final String mimeType;
+
+        FolderDocument(String documentId, String name, String mimeType) {
+            this.documentId = documentId;
+            this.name = name == null || name.trim().isEmpty() ? documentId : name;
+            this.mimeType = mimeType;
+        }
     }
 
     private static class SourceTarget {
