@@ -98,6 +98,7 @@ type StackFormat = "png" | "jpeg";
 type ThemeMode = "system" | "light" | "dark";
 type SaveDestination = "downloads" | "ask";
 type SourceCleanupMode = "off" | "images" | "images-and-folder";
+type BatchPdfMode = "combined" | "per-folder";
 
 type NativePickedImage = {
   id: string;
@@ -142,6 +143,7 @@ type PdfSettings = {
   saveDestination: SaveDestination;
   clearAfterExport: boolean;
   sourceCleanupMode: SourceCleanupMode;
+  batchPdfMode: BatchPdfMode;
   deleteSourcesAfterExport?: boolean;
 };
 
@@ -155,7 +157,8 @@ const initialSettings: PdfSettings = {
   outputName: "",
   saveDestination: "downloads",
   clearAfterExport: true,
-  sourceCleanupMode: "off"
+  sourceCleanupMode: "off",
+  batchPdfMode: "combined"
 };
 
 const pageFormats: Record<PageSize, { portrait: [number, number]; label: string }> = {
@@ -619,50 +622,30 @@ function App() {
 
     setExportState("pdf");
     setStatus("Building PDF...");
-    void recordAppLog("info", `PDF export start. images=${images.length}`);
+    const exportGroups = pdfExportGroups();
+    void recordAppLog(
+      "info",
+      `PDF export start. images=${images.length} groups=${exportGroups.length} mode=${settings.batchPdfMode}`
+    );
 
     try {
       const { default: jsPDF } = await import("jspdf");
-      const firstPage = pageDimensions(images[0]);
-      const pdf = new jsPDF({
-        orientation: firstPage.orientation,
-        unit: "in",
-        format: [firstPage.width, firstPage.height],
-        compress: true
-      });
-
-      for (let index = 0; index < images.length; index += 1) {
-        const image = images[index];
-        const page = pageDimensions(image);
-
-        if (index > 0) {
-          pdf.addPage([page.width, page.height], page.orientation);
-        }
-
-        pdf.setFillColor(settings.background === "black" ? "#000000" : "#ffffff");
-        pdf.rect(0, 0, page.width, page.height, "F");
-
-        const source = await loadImage(image.url);
-        const encoded = imageToJpeg(source, settings.quality, settings.background);
-        const placement = placeImage(
-          source.naturalWidth,
-          source.naturalHeight,
-          page.width,
-          page.height,
-          settings.fit
+      for (let groupIndex = 0; groupIndex < exportGroups.length; groupIndex += 1) {
+        const group = exportGroups[groupIndex];
+        const pdf = await buildPdfDocument(jsPDF, group.images, group.label, groupIndex, exportGroups.length);
+        await downloadBlob(
+          pdf.output("blob"),
+          pdfGroupFilename(group, groupIndex, exportGroups.length),
+          "application/pdf",
+          settings.saveDestination
         );
-
-        pdf.addImage(encoded, "JPEG", placement.x, placement.y, placement.width, placement.height);
-        setStatus(`Added page ${index + 1} of ${images.length}.`);
       }
 
-      await downloadBlob(
-        pdf.output("blob"),
-        outputFilename(settings.outputName, "image-sheets", "pdf"),
-        "application/pdf",
-        settings.saveDestination
-      );
-      await finishExport(`Exported ${images.length} page${images.length === 1 ? "" : "s"} as a PDF.`);
+      const groupMessage =
+        exportGroups.length === 1
+          ? `Exported ${images.length} page${images.length === 1 ? "" : "s"} as a PDF.`
+          : `Exported ${exportGroups.length} PDFs from ${images.length} image${images.length === 1 ? "" : "s"}.`;
+      await finishExport(groupMessage);
       void recordAppLog("info", "PDF export complete.");
     } catch (error) {
       console.error(error);
@@ -671,6 +654,106 @@ function App() {
     } finally {
       setExportState("idle");
     }
+  }
+
+  async function buildPdfDocument(
+    jsPDF: typeof import("jspdf").default,
+    groupImages: SheetImage[],
+    groupLabel: string,
+    groupIndex: number,
+    groupCount: number
+  ) {
+    const firstPage = pageDimensions(groupImages[0]);
+    const pdf = new jsPDF({
+      orientation: firstPage.orientation,
+      unit: "in",
+      format: [firstPage.width, firstPage.height],
+      compress: true
+    });
+
+    for (let index = 0; index < groupImages.length; index += 1) {
+      const image = groupImages[index];
+      const page = pageDimensions(image);
+
+      if (index > 0) {
+        pdf.addPage([page.width, page.height], page.orientation);
+      }
+
+      pdf.setFillColor(settings.background === "black" ? "#000000" : "#ffffff");
+      pdf.rect(0, 0, page.width, page.height, "F");
+
+      const source = await loadImage(image.url);
+      const encoded = imageToJpeg(source, settings.quality, settings.background);
+      const placement = placeImage(
+        source.naturalWidth,
+        source.naturalHeight,
+        page.width,
+        page.height,
+        settings.fit
+      );
+
+      pdf.addImage(encoded, "JPEG", placement.x, placement.y, placement.width, placement.height);
+      setStatus(
+        groupCount === 1
+          ? `Added page ${index + 1} of ${groupImages.length}.`
+          : `Added ${groupLabel} page ${index + 1} of ${groupImages.length} (${groupIndex + 1}/${groupCount}).`
+      );
+    }
+
+    return pdf;
+  }
+
+  function pdfExportGroups() {
+    if (settings.batchPdfMode !== "per-folder") {
+      return [{ label: "image-sheets", images }];
+    }
+
+    const groups = new Map<string, { label: string; images: SheetImage[] }>();
+    const standaloneImages: SheetImage[] = [];
+    for (const image of images) {
+      if (!image.batchFolderUri) {
+        standaloneImages.push(image);
+        continue;
+      }
+
+      const existing = groups.get(image.batchFolderUri);
+      if (existing) {
+        existing.images.push(image);
+      } else {
+        groups.set(image.batchFolderUri, {
+          label: image.batchFolderName || `folder-${groups.size + 1}`,
+          images: [image]
+        });
+      }
+    }
+
+    const outputGroups = Array.from(groups.values());
+    if (standaloneImages.length) {
+      outputGroups.push({ label: "selected-images", images: standaloneImages });
+    }
+    return outputGroups.length ? outputGroups : [{ label: "image-sheets", images }];
+  }
+
+  function pdfGroupFilename(
+    group: { label: string; images: SheetImage[] },
+    groupIndex: number,
+    groupCount: number
+  ) {
+    if (groupCount === 1) {
+      return outputFilename(
+        settings.outputName,
+        settings.batchPdfMode === "per-folder" ? group.label : "image-sheets",
+        "pdf"
+      );
+    }
+
+    const groupStem = sanitizeFilenameStem(group.label) || `folder-${groupIndex + 1}`;
+    const baseStem = sanitizeFilenameStem(settings.outputName);
+    return outputFilename(
+      baseStem ? `${baseStem}-${groupStem}` : groupStem,
+      `image-sheets-${groupIndex + 1}`,
+      "pdf"
+    );
   }
 
   async function exportStackedImage() {
@@ -1022,6 +1105,23 @@ function App() {
               >
                 <option value="downloads">Downloads</option>
                 <option value="ask">Ask each time</option>
+              </select>
+            </label>
+          ) : null}
+          {isAndroidApp() ? (
+            <label className="batchOutputControl">
+              Batch PDF output
+              <select
+                value={settings.batchPdfMode}
+                onChange={(event) =>
+                  setSettings((current) => ({
+                    ...current,
+                    batchPdfMode: event.target.value as BatchPdfMode
+                  }))
+                }
+              >
+                <option value="combined">One PDF</option>
+                <option value="per-folder">One PDF per folder</option>
               </select>
             </label>
           ) : null}
@@ -1655,8 +1755,15 @@ function normalizeSettings(settings: Partial<PdfSettings>): PdfSettings {
       typeof settings.clearAfterExport === "boolean"
         ? settings.clearAfterExport
         : initialSettings.clearAfterExport,
-    sourceCleanupMode: normalizeSourceCleanupMode(settings)
+    sourceCleanupMode: normalizeSourceCleanupMode(settings),
+    batchPdfMode: normalizeBatchPdfMode(settings)
   };
+}
+
+function normalizeBatchPdfMode(settings: Partial<PdfSettings>): BatchPdfMode {
+  return settings.batchPdfMode === "per-folder" || settings.batchPdfMode === "combined"
+    ? settings.batchPdfMode
+    : initialSettings.batchPdfMode;
 }
 
 function normalizeSourceCleanupMode(settings: Partial<PdfSettings>): SourceCleanupMode {
