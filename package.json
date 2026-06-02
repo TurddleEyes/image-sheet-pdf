@@ -1,6 +1,6 @@
 {
   "name": "image-sheet-pdf",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "Arrange images, export one-page PDFs, and stack ordered images into tall PNG or JPEG files.",
   "author": "Codex",
   "private": false,

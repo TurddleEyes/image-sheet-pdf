@@ -71,6 +71,8 @@ declare global {
           deleteImages: (options: { uris: string[] }) => Promise<{
             requested: number;
             deleted: number;
+            foldersDeleted?: number;
+            foldersEmpty?: number;
             cancelled?: boolean;
           }>;
         };
@@ -433,7 +435,7 @@ function App() {
     }
 
     const shouldDelete = window.confirm(
-      `Delete ${sourceUris.length} original phone photo${sourceUris.length === 1 ? "" : "s"} now? This cannot be undone. Android may ask you to approve it next.`
+      `Delete ${sourceUris.length} original phone photo${sourceUris.length === 1 ? "" : "s"} now? If a source folder becomes empty, the app will try to remove that folder too. This cannot be undone. Android may ask you to approve it next.`
     );
     if (!shouldDelete) {
       void recordAppLog("info", "User kept original source photos after export.");
@@ -448,9 +450,15 @@ function App() {
 
       void recordAppLog(
         "info",
-        `Original source delete complete. deleted=${result.deleted} requested=${result.requested}`
+        `Original source delete complete. deleted=${result.deleted} requested=${result.requested} foldersDeleted=${result.foldersDeleted ?? 0} foldersEmpty=${result.foldersEmpty ?? 0}`
       );
-      return ` Deleted ${result.deleted} original phone photo${result.deleted === 1 ? "" : "s"}.`;
+      const folderMessage =
+        result.foldersDeleted && result.foldersDeleted > 0
+          ? ` Deleted ${result.foldersDeleted} empty source folder${result.foldersDeleted === 1 ? "" : "s"}.`
+          : result.foldersEmpty && result.foldersEmpty > 0
+            ? " Source folder was empty, but Android did not allow removing it."
+            : "";
+      return ` Deleted ${result.deleted} original phone photo${result.deleted === 1 ? "" : "s"}.${folderMessage}`;
     } catch (error) {
       void recordAppLog("error", "Original source delete failed.", error);
       return " Original phone photo deletion failed.";

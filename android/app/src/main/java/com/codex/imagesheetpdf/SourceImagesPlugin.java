@@ -24,19 +24,19 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
-import org.json.JSONException;
-
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.UUID;
 
 @CapacitorPlugin(name = "SourceImages")
 public class SourceImagesPlugin extends Plugin {
     private static final int DELETE_REQUEST_CODE = 7813;
     private int pendingDeleteCount = 0;
+    private ArrayList<SourceFolder> pendingFolders = new ArrayList<>();
 
     @PluginMethod
     public void pickImages(PluginCall call) {
@@ -71,12 +71,14 @@ public class SourceImagesPlugin extends Plugin {
             return;
         }
 
+        ArrayList<SourceTarget> targets = sourceTargets(sourceUris);
+        ArrayList<SourceFolder> sourceFolders = sourceFolders(targets);
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             ArrayList<Uri> mediaUris = new ArrayList<>();
-            for (Uri sourceUri : sourceUris) {
-                Uri mediaUri = toMediaStoreUri(sourceUri);
-                if (mediaUri != null) {
-                    mediaUris.add(mediaUri);
+            for (SourceTarget target : targets) {
+                if (target.mediaUri != null) {
+                    mediaUris.add(target.mediaUri);
                 }
             }
 
@@ -87,6 +89,7 @@ public class SourceImagesPlugin extends Plugin {
                         mediaUris
                     );
                     pendingDeleteCount = mediaUris.size();
+                    pendingFolders = sourceFolders;
                     saveCall(call);
                     getActivity().startIntentSenderForResult(
                         pendingIntent.getIntentSender(),
@@ -107,7 +110,8 @@ public class SourceImagesPlugin extends Plugin {
         }
 
         int deleted = deleteDocumentsDirectly(sourceUris);
-        resolveDelete(call, sourceUris.size(), deleted, false);
+        FolderCleanupResult folders = cleanupEmptyFolders(sourceFolders);
+        resolveDelete(call, sourceUris.size(), deleted, false, folders);
     }
 
     @ActivityCallback
@@ -161,8 +165,10 @@ public class SourceImagesPlugin extends Plugin {
         }
 
         boolean cancelled = resultCode != Activity.RESULT_OK;
-        resolveDelete(call, pendingDeleteCount, cancelled ? 0 : pendingDeleteCount, cancelled);
+        FolderCleanupResult folders = cancelled ? new FolderCleanupResult() : cleanupEmptyFolders(pendingFolders);
+        resolveDelete(call, pendingDeleteCount, cancelled ? 0 : pendingDeleteCount, cancelled, folders);
         pendingDeleteCount = 0;
+        pendingFolders = new ArrayList<>();
     }
 
     private JSObject copyImageForWeb(Uri sourceUri) throws Exception {
@@ -259,6 +265,197 @@ public class SourceImagesPlugin extends Plugin {
         }
     }
 
+    private ArrayList<SourceTarget> sourceTargets(ArrayList<Uri> sourceUris) {
+        ArrayList<SourceTarget> targets = new ArrayList<>();
+        for (Uri sourceUri : sourceUris) {
+            Uri mediaUri = toMediaStoreUri(sourceUri);
+            targets.add(new SourceTarget(sourceUri, mediaUri, folderForSource(sourceUri, mediaUri)));
+        }
+        return targets;
+    }
+
+    private ArrayList<SourceFolder> sourceFolders(ArrayList<SourceTarget> targets) {
+        HashMap<String, SourceFolder> folders = new HashMap<>();
+        for (SourceTarget target : targets) {
+            if (target.folder != null && !folders.containsKey(target.folder.key)) {
+                folders.put(target.folder.key, target.folder);
+            }
+        }
+        return new ArrayList<>(folders.values());
+    }
+
+    private SourceFolder folderForSource(Uri sourceUri, Uri mediaUri) {
+        SourceFolder documentFolder = documentFolder(sourceUri);
+        if (documentFolder != null) {
+            return documentFolder;
+        }
+
+        if (mediaUri != null) {
+            SourceFolder mediaFolder = mediaFolder(mediaUri);
+            if (mediaFolder != null) {
+                return mediaFolder;
+            }
+        }
+
+        return null;
+    }
+
+    private SourceFolder documentFolder(Uri sourceUri) {
+        if (!DocumentsContract.isDocumentUri(getContext(), sourceUri)) {
+            return null;
+        }
+
+        String authority = sourceUri.getAuthority();
+        if (!"com.android.externalstorage.documents".equals(authority)) {
+            return null;
+        }
+
+        String documentId = DocumentsContract.getDocumentId(sourceUri);
+        int slash = documentId.lastIndexOf('/');
+        if (slash <= 0) {
+            return null;
+        }
+
+        String parentDocumentId = documentId.substring(0, slash);
+        Uri parentUri = DocumentsContract.buildDocumentUri(authority, parentDocumentId);
+        Uri childrenUri = DocumentsContract.buildChildDocumentsUri(authority, parentDocumentId);
+        return SourceFolder.forDocument(parentDocumentId, parentUri, childrenUri);
+    }
+
+    private SourceFolder mediaFolder(Uri mediaUri) {
+        String[] projection = {
+            MediaStore.Images.Media.BUCKET_ID,
+            MediaStore.Images.Media.BUCKET_DISPLAY_NAME,
+            MediaStore.Images.Media.DATA
+        };
+
+        try (Cursor cursor = getContext().getContentResolver().query(mediaUri, projection, null, null, null)) {
+            if (cursor == null || !cursor.moveToFirst()) {
+                return null;
+            }
+
+            String bucketId = cursorString(cursor, MediaStore.Images.Media.BUCKET_ID);
+            if (bucketId == null || bucketId.isEmpty()) {
+                return null;
+            }
+
+            String bucketName = cursorString(cursor, MediaStore.Images.Media.BUCKET_DISPLAY_NAME);
+            String dataPath = cursorString(cursor, MediaStore.Images.Media.DATA);
+            String folderPath = null;
+            if (dataPath != null && !dataPath.isEmpty()) {
+                File parent = new File(dataPath).getParentFile();
+                if (parent != null) {
+                    folderPath = parent.getAbsolutePath();
+                }
+            }
+
+            return SourceFolder.forMedia(bucketId, bucketName, folderPath);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private FolderCleanupResult cleanupEmptyFolders(ArrayList<SourceFolder> folders) {
+        FolderCleanupResult result = new FolderCleanupResult();
+        for (SourceFolder folder : folders) {
+            if (!folderIsEmpty(folder)) {
+                continue;
+            }
+
+            result.empty += 1;
+            if (deleteFolder(folder)) {
+                result.deleted += 1;
+            }
+        }
+        return result;
+    }
+
+    private boolean folderIsEmpty(SourceFolder folder) {
+        if (folder.kind == SourceFolder.Kind.DOCUMENT) {
+            return documentFolderIsEmpty(folder.childrenUri);
+        }
+
+        return mediaFolderImageCount(folder.bucketId) == 0;
+    }
+
+    private boolean documentFolderIsEmpty(Uri childrenUri) {
+        try (Cursor cursor = getContext().getContentResolver().query(childrenUri, null, null, null, null)) {
+            return cursor == null || !cursor.moveToFirst();
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private int mediaFolderImageCount(String bucketId) {
+        try (
+            Cursor cursor = getContext().getContentResolver().query(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                new String[] { MediaStore.Images.Media._ID },
+                MediaStore.Images.Media.BUCKET_ID + "=?",
+                new String[] { bucketId },
+                null
+            )
+        ) {
+            return cursor == null ? -1 : cursor.getCount();
+        } catch (Exception ignored) {
+            return -1;
+        }
+    }
+
+    private boolean deleteFolder(SourceFolder folder) {
+        if (folder.kind == SourceFolder.Kind.DOCUMENT) {
+            try {
+                return DocumentsContract.deleteDocument(getContext().getContentResolver(), folder.documentUri);
+            } catch (Exception ignored) {
+                return false;
+            }
+        }
+
+        if (folder.folderPath == null || folder.folderPath.isEmpty()) {
+            return false;
+        }
+
+        File directory = new File(folder.folderPath);
+        if (!isSafeFolderDeleteCandidate(directory)) {
+            return false;
+        }
+
+        File[] children = directory.listFiles();
+        if (children != null && children.length > 0) {
+            return false;
+        }
+
+        return directory.delete();
+    }
+
+    private boolean isSafeFolderDeleteCandidate(File directory) {
+        if (!directory.exists() || !directory.isDirectory()) {
+            return false;
+        }
+
+        String name = directory.getName();
+        if (
+            "DCIM".equalsIgnoreCase(name) ||
+            "Camera".equalsIgnoreCase(name) ||
+            "Pictures".equalsIgnoreCase(name) ||
+            "Download".equalsIgnoreCase(name) ||
+            "Downloads".equalsIgnoreCase(name)
+        ) {
+            return false;
+        }
+
+        File parent = directory.getParentFile();
+        return parent != null && parent.getParentFile() != null;
+    }
+
+    private String cursorString(Cursor cursor, String column) {
+        int index = cursor.getColumnIndex(column);
+        if (index < 0) {
+            return null;
+        }
+        return cursor.getString(index);
+    }
+
     private int deleteDocumentsDirectly(ArrayList<Uri> uris) {
         int deleted = 0;
         for (Uri uri : uris) {
@@ -278,10 +475,22 @@ public class SourceImagesPlugin extends Plugin {
     }
 
     private void resolveDelete(PluginCall call, int requested, int deleted, boolean cancelled) {
+        resolveDelete(call, requested, deleted, cancelled, new FolderCleanupResult());
+    }
+
+    private void resolveDelete(
+        PluginCall call,
+        int requested,
+        int deleted,
+        boolean cancelled,
+        FolderCleanupResult folders
+    ) {
         JSObject output = new JSObject();
         output.put("requested", requested);
         output.put("deleted", deleted);
         output.put("cancelled", cancelled);
+        output.put("foldersEmpty", folders.empty);
+        output.put("foldersDeleted", folders.deleted);
         call.resolve(output);
     }
 
@@ -314,5 +523,74 @@ public class SourceImagesPlugin extends Plugin {
             return "image-" + UUID.randomUUID() + ".jpg";
         }
         return cleaned;
+    }
+
+    private static class SourceTarget {
+        final Uri sourceUri;
+        final Uri mediaUri;
+        final SourceFolder folder;
+
+        SourceTarget(Uri sourceUri, Uri mediaUri, SourceFolder folder) {
+            this.sourceUri = sourceUri;
+            this.mediaUri = mediaUri;
+            this.folder = folder;
+        }
+    }
+
+    private static class SourceFolder {
+        enum Kind {
+            DOCUMENT,
+            MEDIA
+        }
+
+        final Kind kind;
+        final String key;
+        final String bucketId;
+        final String folderPath;
+        final Uri documentUri;
+        final Uri childrenUri;
+
+        private SourceFolder(
+            Kind kind,
+            String key,
+            String bucketId,
+            String folderPath,
+            Uri documentUri,
+            Uri childrenUri
+        ) {
+            this.kind = kind;
+            this.key = key;
+            this.bucketId = bucketId;
+            this.folderPath = folderPath;
+            this.documentUri = documentUri;
+            this.childrenUri = childrenUri;
+        }
+
+        static SourceFolder forDocument(String documentId, Uri documentUri, Uri childrenUri) {
+            return new SourceFolder(
+                Kind.DOCUMENT,
+                "document:" + documentId,
+                null,
+                null,
+                documentUri,
+                childrenUri
+            );
+        }
+
+        static SourceFolder forMedia(String bucketId, String bucketName, String folderPath) {
+            return new SourceFolder(
+                Kind.MEDIA,
+                "media:" + bucketId + ":" + (bucketName == null ? "" : bucketName),
+                bucketId,
+                folderPath,
+                null,
+                null
+            );
+        }
+    }
+
+    private static class FolderCleanupResult {
+        int empty = 0;
+        int deleted = 0;
     }
 }
