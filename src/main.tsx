@@ -1113,6 +1113,7 @@ function App() {
           </label>
           {isAndroidApp() ? (
             <label
+              className="sourceCleanupControl"
               title={
                 sourceImageCount
                   ? "Choose what original phone files to delete after a successful export"
@@ -1130,8 +1131,8 @@ function App() {
                 }
               >
                 <option value="off">Keep originals</option>
-                <option value="images">Delete original images</option>
-                <option value="images-and-folder">Delete images and batch folder</option>
+                <option value="images">Delete images only</option>
+                <option value="images-and-folder">Images + batch folder</option>
               </select>
             </label>
           ) : null}

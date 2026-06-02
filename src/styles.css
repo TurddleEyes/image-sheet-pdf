@@ -263,6 +263,10 @@ input[type="text"]::placeholder {
   grid-column: span 2;
 }
 
+.sourceCleanupControl {
+  grid-column: span 2;
+}
+
 .qualityControl input {
   grid-column: 2;
 }
@@ -485,7 +489,7 @@ input[type="text"]::placeholder {
 @media (max-width: 620px) {
   .workspace,
   .previewPanel {
-    padding: 14px;
+    padding: 10px;
   }
 
   .topbar,
@@ -495,50 +499,107 @@ input[type="text"]::placeholder {
     flex-direction: column;
   }
 
+  .topbar {
+    gap: 10px;
+  }
+
+  .eyebrow {
+    margin-bottom: 2px;
+    font-size: 0.64rem;
+  }
+
+  h1 {
+    max-width: 18ch;
+    font-size: 1.32rem;
+    line-height: 1.08;
+  }
+
   .topActions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     justify-content: stretch;
+    gap: 8px;
   }
 
   .topActions button {
-    flex: 1 1 140px;
+    min-width: 0;
+    min-height: 36px;
+    padding: 0 8px;
+    font-size: 0.8rem;
+    white-space: nowrap;
+  }
+
+  .topActions .primary {
+    grid-column: 1 / -1;
   }
 
   .dropzone {
     display: grid;
-    gap: 10px;
-    margin: 16px 0 14px;
-    padding: 12px;
+    gap: 7px;
+    margin: 12px 0 10px;
+    padding: 8px;
   }
 
   .dropzone button {
     width: 100%;
+    min-height: 36px;
+    font-size: 0.86rem;
   }
 
   .dropzone p {
-    font-size: 0.92rem;
+    font-size: 0.78rem;
     text-align: center;
   }
 
   .controls {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
-    padding: 12px;
+    gap: 8px;
+    margin-bottom: 12px;
+    padding: 10px;
   }
 
   .controls label {
-    gap: 5px;
-    font-size: 0.76rem;
+    gap: 4px;
+    font-size: 0.68rem;
   }
 
   select,
   input[type="text"] {
-    min-height: 44px;
+    min-height: 38px;
     padding: 0 8px;
-    font-size: 0.92rem;
+    font-size: 0.8rem;
   }
 
   .qualityControl {
     grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .toggleControl {
+    min-height: 38px;
+    padding: 0 8px;
+  }
+
+  .toggleControl span,
+  .controls span {
+    font-size: 0.76rem;
+  }
+
+  .listbar {
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  .iconRow button {
+    width: 34px;
+    min-height: 34px;
+  }
+
+  .imageGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .emptyGrid {
+    min-height: 210px;
   }
 
   .imageItem {
@@ -553,6 +614,25 @@ input[type="text"]::placeholder {
     grid-column: 1 / -1;
     justify-content: flex-end;
   }
+
+  .previewPanel {
+    align-content: stretch;
+    gap: 0;
+    border-left: 0;
+    border-top: 1px solid var(--border);
+    background: var(--surface-soft);
+    color: var(--text);
+  }
+
+  .previewPanel .paper {
+    display: none;
+  }
+
+  .previewPanel p {
+    color: var(--muted);
+    font-size: 0.8rem;
+    text-align: left;
+  }
 }
 
 @media (max-width: 380px) {
@@ -561,6 +641,7 @@ input[type="text"]::placeholder {
   }
 
   .filenameControl,
+  .sourceCleanupControl,
   .toggleControl {
     grid-column: 1 / -1;
   }
