@@ -10,9 +10,11 @@ import {
   GripVertical,
   ImagePlus,
   Layers,
+  Settings2,
   RotateCcw,
   SortAsc,
-  Trash2
+  Trash2,
+  X
 } from "lucide-react";
 import "./styles.css";
 import packageInfo from "../package.json";
@@ -183,6 +185,7 @@ function App() {
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [exportState, setExportState] = useState<"idle" | "pdf" | "stack">("idle");
   const [status, setStatus] = useState("Choose images to start.");
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const totalSize = useMemo(
@@ -228,6 +231,21 @@ function App() {
       clearSavedExportSettings();
     }
   }, [rememberSettings, settings]);
+
+  useEffect(() => {
+    if (!settingsOpen) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSettingsOpen(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [settingsOpen]);
 
   useEffect(() => {
     if (!isAndroidApp()) {
@@ -1024,9 +1042,15 @@ function App() {
             <h1>Arrange images into one-page sheets</h1>
           </div>
           <div className="topActions">
-            <button type="button" onClick={saveCrashLog} title="Save crash log">
-              <FileText size={18} aria-hidden="true" />
-              Save Log
+            <button
+              type="button"
+              onClick={() => setSettingsOpen(true)}
+              title="Open export settings"
+              aria-haspopup="dialog"
+              aria-expanded={settingsOpen}
+            >
+              <Settings2 size={18} aria-hidden="true" />
+              Settings
             </button>
             <button
               type="button"
@@ -1078,7 +1102,38 @@ function App() {
           <p>{isAndroidApp() ? "Add photos from your phone." : "Drop files here, or add them from your computer."}</p>
         </section>
 
-        <section className="controls" aria-label="PDF settings">
+        {settingsOpen ? (
+          <button
+            className="drawerBackdrop"
+            type="button"
+            aria-label="Close export settings"
+            onClick={() => setSettingsOpen(false)}
+          />
+        ) : null}
+        <aside
+          className={`settingsDrawer ${settingsOpen ? "open" : ""}`}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Export settings"
+          aria-hidden={!settingsOpen}
+          inert={!settingsOpen ? true : undefined}
+        >
+          <div className="drawerHeader">
+            <div>
+              <p className="eyebrow">Settings</p>
+              <h2>Export setup</h2>
+            </div>
+            <button type="button" onClick={() => setSettingsOpen(false)} title="Close settings">
+              <X size={18} aria-hidden="true" />
+            </button>
+          </div>
+          <div className="drawerUtilityActions">
+            <button type="button" onClick={saveCrashLog} title="Save crash log">
+              <FileText size={18} aria-hidden="true" />
+              Save Log
+            </button>
+          </div>
+          <section className="controls" aria-label="PDF settings">
           <label className="filenameControl">
             Output name
             <input
@@ -1269,7 +1324,8 @@ function App() {
             />
             <span>Remember export settings</span>
           </label>
-        </section>
+          </section>
+        </aside>
 
         <section className="listbar">
           <div>
