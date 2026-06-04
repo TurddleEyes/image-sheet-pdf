@@ -327,8 +327,16 @@ input[type="text"]::placeholder {
 }
 
 .sourceCleanupControl,
-.batchOutputControl {
+.batchOutputControl,
+.compressionControl {
   grid-column: span 2;
+}
+
+.compressionControl span {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 700;
+  line-height: 1.25;
 }
 
 .qualityControl input {
@@ -706,6 +714,7 @@ input[type="text"]::placeholder {
 
   .filenameControl,
   .batchOutputControl,
+  .compressionControl,
   .sourceCleanupControl,
   .toggleControl {
     grid-column: 1 / -1;

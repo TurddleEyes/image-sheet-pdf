@@ -101,6 +101,7 @@ type ThemeMode = "system" | "light" | "dark";
 type SaveDestination = "downloads" | "ask";
 type SourceCleanupMode = "off" | "images" | "images-and-folder";
 type BatchPdfMode = "combined" | "per-folder";
+type PdfCompressionMode = "original" | "high" | "balanced" | "small";
 
 type NativePickedImage = {
   id: string;
@@ -141,6 +142,7 @@ type PdfSettings = {
   background: "white" | "black";
   stackFormat: StackFormat;
   quality: number;
+  pdfCompression: PdfCompressionMode;
   outputName: string;
   saveDestination: SaveDestination;
   clearAfterExport: boolean;
@@ -156,6 +158,7 @@ const initialSettings: PdfSettings = {
   background: "white",
   stackFormat: "png",
   quality: 0.92,
+  pdfCompression: "high",
   outputName: "",
   saveDestination: "downloads",
   clearAfterExport: true,
@@ -643,7 +646,7 @@ function App() {
     const exportGroups = pdfExportGroups();
     void recordAppLog(
       "info",
-      `PDF export start. images=${images.length} groups=${exportGroups.length} mode=${settings.batchPdfMode}`
+      `PDF export start. images=${images.length} groups=${exportGroups.length} mode=${settings.batchPdfMode} compression=${settings.pdfCompression}`
     );
 
     try {
@@ -701,7 +704,11 @@ function App() {
       pdf.rect(0, 0, page.width, page.height, "F");
 
       const source = await loadImage(image.url);
-      const encoded = imageToJpeg(source, settings.quality, settings.background);
+      const encoded = imageToJpeg(
+        source,
+        pdfCompressionQuality(settings.pdfCompression),
+        settings.background
+      );
       const placement = placeImage(
         source.naturalWidth,
         source.naturalHeight,
@@ -1180,6 +1187,24 @@ function App() {
               </select>
             </label>
           ) : null}
+          <label className="compressionControl">
+            PDF compression
+            <select
+              value={settings.pdfCompression}
+              onChange={(event) =>
+                setSettings((current) => ({
+                  ...current,
+                  pdfCompression: event.target.value as PdfCompressionMode
+                }))
+              }
+            >
+              <option value="original">Original</option>
+              <option value="high">High quality</option>
+              <option value="balanced">Balanced</option>
+              <option value="small">Small file</option>
+            </select>
+            <span>{pdfCompressionDescription(settings.pdfCompression)}</span>
+          </label>
           <label>
             Page
             <select
@@ -1265,7 +1290,7 @@ function App() {
             </select>
           </label>
           <label className="qualityControl">
-            Quality
+            Stack quality
             <input
               type="range"
               min="0.55"
@@ -1529,6 +1554,32 @@ function imageToJpeg(image: HTMLImageElement, quality: number, background: "whit
   context.fillRect(0, 0, canvas.width, canvas.height);
   context.drawImage(image, 0, 0);
   return canvas.toDataURL("image/jpeg", quality);
+}
+
+function pdfCompressionQuality(mode: PdfCompressionMode) {
+  switch (mode) {
+    case "original":
+      return 1;
+    case "high":
+      return 0.92;
+    case "balanced":
+      return 0.84;
+    case "small":
+      return 0.72;
+  }
+}
+
+function pdfCompressionDescription(mode: PdfCompressionMode) {
+  switch (mode) {
+    case "original":
+      return "Least compression, largest PDFs.";
+    case "high":
+      return "Best default for photos.";
+    case "balanced":
+      return "Smaller files with minor visible loss.";
+    case "small":
+      return "Smallest PDFs, visible loss possible.";
+  }
 }
 
 function canvasToBlob(
@@ -1802,6 +1853,7 @@ function normalizeSettings(settings: Partial<PdfSettings>): PdfSettings {
       typeof settings.quality === "number" && Number.isFinite(settings.quality)
         ? Math.min(1, Math.max(0.55, settings.quality))
         : initialSettings.quality,
+    pdfCompression: normalizePdfCompression(settings.pdfCompression),
     outputName: typeof settings.outputName === "string" ? settings.outputName : initialSettings.outputName,
     saveDestination:
       settings.saveDestination === "ask" || settings.saveDestination === "downloads"
@@ -1814,6 +1866,12 @@ function normalizeSettings(settings: Partial<PdfSettings>): PdfSettings {
     sourceCleanupMode: normalizeSourceCleanupMode(settings),
     batchPdfMode: normalizeBatchPdfMode(settings)
   };
+}
+
+function normalizePdfCompression(value?: PdfCompressionMode): PdfCompressionMode {
+  return value === "original" || value === "high" || value === "balanced" || value === "small"
+    ? value
+    : initialSettings.pdfCompression;
 }
 
 function normalizeBatchPdfMode(settings: Partial<PdfSettings>): BatchPdfMode {
