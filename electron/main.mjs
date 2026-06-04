@@ -14,6 +14,7 @@ function createWindow() {
     minWidth: 980,
     minHeight: 640,
     backgroundColor: "#eef0e7",
+    icon: join(app.getAppPath(), "dist", "icon.png"),
     title: "Image Sheet PDF",
     webPreferences: {
       contextIsolation: true,

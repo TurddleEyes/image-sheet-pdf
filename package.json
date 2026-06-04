@@ -57,6 +57,7 @@
     ],
     "win": {
       "target": "nsis",
+      "icon": "build/icon.ico",
       "artifactName": "Image-Sheet-PDF-Setup-${version}.${ext}"
     },
     "publish": {
