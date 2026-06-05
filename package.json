@@ -1,6 +1,6 @@
 {
   "name": "image-sheet-pdf",
-  "version": "0.1.20",
+  "version": "0.1.21",
   "description": "Arrange images, export one-page PDFs, stack ordered images, and save ordered ZIP or CBZ archives.",
   "author": "Codex",
   "private": false,
