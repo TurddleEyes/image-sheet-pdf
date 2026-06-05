@@ -1,7 +1,7 @@
 {
   "name": "image-sheet-pdf",
   "version": "0.1.20",
-  "description": "Arrange images, export one-page PDFs, and stack ordered images into tall PNG or JPEG files.",
+  "description": "Arrange images, export one-page PDFs, stack ordered images, and save ordered ZIP or CBZ archives.",
   "author": "Codex",
   "private": false,
   "type": "module",

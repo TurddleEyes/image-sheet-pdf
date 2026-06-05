@@ -328,10 +328,12 @@ input[type="text"]::placeholder {
 
 .sourceCleanupControl,
 .batchOutputControl,
+.archiveControl,
 .compressionControl {
   grid-column: span 2;
 }
 
+.archiveControl span,
 .compressionControl span {
   color: var(--muted);
   font-size: 0.76rem;
@@ -714,6 +716,7 @@ input[type="text"]::placeholder {
 
   .filenameControl,
   .batchOutputControl,
+  .archiveControl,
   .compressionControl,
   .sourceCleanupControl,
   .toggleControl {

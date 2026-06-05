@@ -1,6 +1,7 @@
 import React, { ChangeEvent, DragEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  Archive,
   ArrowDown,
   ArrowUp,
   Download,
@@ -97,6 +98,7 @@ type PageSize = "letter" | "a4";
 type Orientation = "portrait" | "landscape" | "auto";
 type FitMode = "contain" | "cover";
 type StackFormat = "png" | "jpeg";
+type ArchiveFormat = "zip" | "cbz";
 type ThemeMode = "system" | "light" | "dark";
 type SaveDestination = "downloads" | "ask";
 type SourceCleanupMode = "off" | "images" | "images-and-folder";
@@ -141,6 +143,7 @@ type PdfSettings = {
   fit: FitMode;
   background: "white" | "black";
   stackFormat: StackFormat;
+  archiveFormat: ArchiveFormat;
   quality: number;
   pdfCompression: PdfCompressionMode;
   outputName: string;
@@ -157,6 +160,7 @@ const initialSettings: PdfSettings = {
   fit: "contain",
   background: "white",
   stackFormat: "png",
+  archiveFormat: "zip",
   quality: 0.92,
   pdfCompression: "high",
   outputName: "",
@@ -186,7 +190,7 @@ function App() {
   );
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => readThemeModePreference());
   const [draggedId, setDraggedId] = useState<string | null>(null);
-  const [exportState, setExportState] = useState<"idle" | "pdf" | "stack">("idle");
+  const [exportState, setExportState] = useState<"idle" | "pdf" | "stack" | "archive">("idle");
   const [status, setStatus] = useState("Choose images to start.");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -638,6 +642,44 @@ function App() {
       : { width: base[0], height: base[1], orientation: "p" };
   }
 
+  async function exportArchive() {
+    if (!images.length || exportState !== "idle") return;
+
+    setExportState("archive");
+    setStatus("Building archive...");
+    void recordAppLog(
+      "info",
+      `Archive export start. images=${images.length} format=${settings.archiveFormat}`
+    );
+
+    try {
+      const mimeType = archiveMimeType(settings.archiveFormat);
+      const blob = await buildStoredZip(
+        images,
+        (index, total, name) => {
+          setStatus(`Adding ${index} of ${total} to archive: ${name}`);
+        },
+        mimeType
+      );
+      await downloadBlob(
+        blob,
+        outputFilename(settings.outputName, "image-archive", settings.archiveFormat),
+        mimeType,
+        settings.saveDestination
+      );
+      await finishExport(
+        `Exported ${images.length} image${images.length === 1 ? "" : "s"} as ${settings.archiveFormat.toUpperCase()}.`
+      );
+      void recordAppLog("info", `Archive export complete. bytes=${blob.size}`);
+    } catch (error) {
+      console.error(error);
+      void recordAppLog("error", "Archive export failed.", error);
+      setStatus("Archive export failed. Try fewer images or smaller files.");
+    } finally {
+      setExportState("idle");
+    }
+  }
+
   async function exportPdf() {
     if (!images.length || exportState !== "idle") return;
 
@@ -1069,6 +1111,15 @@ function App() {
               {exportState === "stack" ? "Stacking" : "Stack Image"}
             </button>
             <button
+              type="button"
+              onClick={exportArchive}
+              disabled={!images.length || exportState !== "idle"}
+              title="Export image archive"
+            >
+              <Archive size={18} aria-hidden="true" />
+              {exportState === "archive" ? "Archiving" : "Archive"}
+            </button>
+            <button
               className="primary"
               type="button"
               onClick={exportPdf}
@@ -1187,6 +1238,22 @@ function App() {
               </select>
             </label>
           ) : null}
+          <label className="archiveControl">
+            Archive format
+            <select
+              value={settings.archiveFormat}
+              onChange={(event) =>
+                setSettings((current) => ({
+                  ...current,
+                  archiveFormat: event.target.value as ArchiveFormat
+                }))
+              }
+            >
+              <option value="zip">ZIP</option>
+              <option value="cbz">CBZ</option>
+            </select>
+            <span>{archiveFormatDescription(settings.archiveFormat)}</span>
+          </label>
           <label className="compressionControl">
             PDF compression
             <select
@@ -1582,6 +1649,19 @@ function pdfCompressionDescription(mode: PdfCompressionMode) {
   }
 }
 
+function archiveFormatDescription(format: ArchiveFormat) {
+  switch (format) {
+    case "zip":
+      return "Original images in a normal ZIP file.";
+    case "cbz":
+      return "Comic-book ZIP. CBR uses RAR, so CBZ is the supported comic archive.";
+  }
+}
+
+function archiveMimeType(format: ArchiveFormat) {
+  return format === "cbz" ? "application/vnd.comicbook+zip" : "application/zip";
+}
+
 function canvasToBlob(
   canvas: HTMLCanvasElement,
   mimeType = "image/png",
@@ -1605,6 +1685,224 @@ function fileToDataUrl(file: File): Promise<string> {
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
+}
+
+type StoredZipEntry = {
+  nameBytes: Uint8Array;
+  crc32: number;
+  size: number;
+  dosTime: number;
+  dosDate: number;
+  localHeaderOffset: number;
+};
+
+async function buildStoredZip(
+  items: SheetImage[],
+  onProgress: (index: number, total: number, name: string) => void,
+  mimeType = "application/zip"
+) {
+  if (items.length > 0xffff) {
+    throw new Error("ZIP export supports up to 65,535 files.");
+  }
+
+  const encoder = new TextEncoder();
+  const localParts: BlobPart[] = [];
+  const centralParts: BlobPart[] = [];
+  const entries: StoredZipEntry[] = [];
+  let offset = 0;
+
+  for (let index = 0; index < items.length; index += 1) {
+    const image = items[index];
+    const entryName = archiveEntryName(image, index, items.length);
+    const nameBytes = encoder.encode(entryName);
+    if (nameBytes.length > 0xffff) {
+      throw new Error(`Archive filename is too long: ${entryName}`);
+    }
+
+    ensureZip32Size(image.file.size, image.name);
+    onProgress(index + 1, items.length, image.name);
+    const crc32 = await crc32ForBlob(image.file);
+    const { dosTime, dosDate } = zipDosDateTime(new Date(image.file.lastModified || Date.now()));
+    const localHeaderOffset = offset;
+    const localHeader = zipLocalHeader(nameBytes, crc32, image.file.size, dosTime, dosDate);
+
+    localParts.push(localHeader, image.file);
+    offset += localHeader.byteLength + image.file.size;
+    ensureZip32Size(offset, "archive");
+    entries.push({
+      nameBytes,
+      crc32,
+      size: image.file.size,
+      dosTime,
+      dosDate,
+      localHeaderOffset
+    });
+  }
+
+  const centralDirectoryOffset = offset;
+  for (const entry of entries) {
+    const centralHeader = zipCentralHeader(entry);
+    centralParts.push(centralHeader);
+    offset += centralHeader.byteLength;
+    ensureZip32Size(offset, "archive");
+  }
+
+  const centralDirectorySize = offset - centralDirectoryOffset;
+  const endRecord = zipEndOfCentralDirectory(
+    entries.length,
+    centralDirectorySize,
+    centralDirectoryOffset
+  );
+
+  return new Blob([...localParts, ...centralParts, endRecord], { type: mimeType });
+}
+
+function archiveEntryName(image: SheetImage, index: number, total: number) {
+  const width = Math.max(3, String(total).length);
+  const order = String(index + 1).padStart(width, "0");
+  const stem = sanitizeFilenameStem(image.name) || "image";
+  return `${order}-${stem}${imageExtension(image.name, image.file.type)}`;
+}
+
+function imageExtension(filename: string, mimeType: string) {
+  const match = filename.match(/\.([A-Za-z0-9]{1,8})$/u);
+  if (match) {
+    return `.${match[1].toLowerCase()}`;
+  }
+
+  switch (mimeType) {
+    case "image/jpeg":
+      return ".jpg";
+    case "image/png":
+      return ".png";
+    case "image/webp":
+      return ".webp";
+    case "image/gif":
+      return ".gif";
+    case "image/bmp":
+      return ".bmp";
+    default:
+      return ".img";
+  }
+}
+
+function zipLocalHeader(
+  nameBytes: Uint8Array,
+  crc32: number,
+  size: number,
+  dosTime: number,
+  dosDate: number
+) {
+  const header = new Uint8Array(30 + nameBytes.length);
+  const view = new DataView(header.buffer);
+  view.setUint32(0, 0x04034b50, true);
+  view.setUint16(4, 20, true);
+  view.setUint16(6, 0x0800, true);
+  view.setUint16(8, 0, true);
+  view.setUint16(10, dosTime, true);
+  view.setUint16(12, dosDate, true);
+  view.setUint32(14, crc32, true);
+  view.setUint32(18, size, true);
+  view.setUint32(22, size, true);
+  view.setUint16(26, nameBytes.length, true);
+  view.setUint16(28, 0, true);
+  header.set(nameBytes, 30);
+  return header;
+}
+
+function zipCentralHeader(entry: StoredZipEntry) {
+  const header = new Uint8Array(46 + entry.nameBytes.length);
+  const view = new DataView(header.buffer);
+  view.setUint32(0, 0x02014b50, true);
+  view.setUint16(4, 20, true);
+  view.setUint16(6, 20, true);
+  view.setUint16(8, 0x0800, true);
+  view.setUint16(10, 0, true);
+  view.setUint16(12, entry.dosTime, true);
+  view.setUint16(14, entry.dosDate, true);
+  view.setUint32(16, entry.crc32, true);
+  view.setUint32(20, entry.size, true);
+  view.setUint32(24, entry.size, true);
+  view.setUint16(28, entry.nameBytes.length, true);
+  view.setUint16(30, 0, true);
+  view.setUint16(32, 0, true);
+  view.setUint16(34, 0, true);
+  view.setUint16(36, 0, true);
+  view.setUint32(38, 0, true);
+  view.setUint32(42, entry.localHeaderOffset, true);
+  header.set(entry.nameBytes, 46);
+  return header;
+}
+
+function zipEndOfCentralDirectory(
+  entryCount: number,
+  centralDirectorySize: number,
+  centralDirectoryOffset: number
+) {
+  const endRecord = new Uint8Array(22);
+  const view = new DataView(endRecord.buffer);
+  view.setUint32(0, 0x06054b50, true);
+  view.setUint16(4, 0, true);
+  view.setUint16(6, 0, true);
+  view.setUint16(8, entryCount, true);
+  view.setUint16(10, entryCount, true);
+  view.setUint32(12, centralDirectorySize, true);
+  view.setUint32(16, centralDirectoryOffset, true);
+  view.setUint16(20, 0, true);
+  return endRecord;
+}
+
+function zipDosDateTime(date: Date) {
+  const year = Math.max(1980, date.getFullYear());
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  const hours = date.getHours();
+  const minutes = date.getMinutes();
+  const seconds = Math.floor(date.getSeconds() / 2);
+  return {
+    dosTime: (hours << 11) | (minutes << 5) | seconds,
+    dosDate: ((year - 1980) << 9) | (month << 5) | day
+  };
+}
+
+async function crc32ForBlob(blob: Blob) {
+  const chunkSize = 1024 * 1024;
+  let crc = 0xffffffff;
+
+  for (let offset = 0; offset < blob.size; offset += chunkSize) {
+    const chunk = new Uint8Array(await blob.slice(offset, offset + chunkSize).arrayBuffer());
+    crc = updateCrc32(crc, chunk);
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+  }
+
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function updateCrc32(crc: number, bytes: Uint8Array) {
+  for (const byte of bytes) {
+    crc = (crc >>> 8) ^ crc32Table[(crc ^ byte) & 0xff];
+  }
+  return crc >>> 0;
+}
+
+function createCrc32Table() {
+  const table = new Uint32Array(256);
+  for (let index = 0; index < table.length; index += 1) {
+    let value = index;
+    for (let bit = 0; bit < 8; bit += 1) {
+      value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+    }
+    table[index] = value >>> 0;
+  }
+  return table;
+}
+
+const crc32Table = createCrc32Table();
+
+function ensureZip32Size(size: number, label: string) {
+  if (size > 0xffffffff) {
+    throw new Error(`${label} is too large for this ZIP writer.`);
+  }
 }
 
 function escapeXml(value: string) {
@@ -1849,6 +2147,7 @@ function normalizeSettings(settings: Partial<PdfSettings>): PdfSettings {
       settings.stackFormat === "jpeg" || settings.stackFormat === "png"
         ? settings.stackFormat
         : initialSettings.stackFormat,
+    archiveFormat: normalizeArchiveFormat(settings.archiveFormat),
     quality:
       typeof settings.quality === "number" && Number.isFinite(settings.quality)
         ? Math.min(1, Math.max(0.55, settings.quality))
@@ -1872,6 +2171,10 @@ function normalizePdfCompression(value?: PdfCompressionMode): PdfCompressionMode
   return value === "original" || value === "high" || value === "balanced" || value === "small"
     ? value
     : initialSettings.pdfCompression;
+}
+
+function normalizeArchiveFormat(value?: ArchiveFormat): ArchiveFormat {
+  return value === "zip" || value === "cbz" ? value : initialSettings.archiveFormat;
 }
 
 function normalizeBatchPdfMode(settings: Partial<PdfSettings>): BatchPdfMode {
